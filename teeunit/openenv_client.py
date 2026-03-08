@@ -214,10 +214,12 @@ class TeeEnv:
         data = response.json()
         
         # Parse results for each agent
+        # Server returns: {"results": {"0": {...}, "1": {...}}, "state": {...}}
         results = {}
         game_over = False
         
-        for agent_id_str, result_data in data.items():
+        results_data = data.get("results", data)  # Handle both formats
+        for agent_id_str, result_data in results_data.items():
             agent_id = int(agent_id_str)
             obs = self._parse_observation(result_data.get("observation", {}))
             obs.reward = result_data.get("reward", 0.0)
@@ -234,8 +236,21 @@ class TeeEnv:
                 info=result_data.get("info", {}),
             )
         
-        # Get state
-        state = await self.state()
+        # Parse state from response (if available) or fetch separately
+        if "state" in data:
+            state_data = data["state"]
+            state = TeeState(
+                episode_id=state_data.get("episode_id", ""),
+                step_count=state_data.get("step_count", 0),
+                tick=state_data.get("tick", 0),
+                agents_alive=state_data.get("agents_alive", []),
+                scores={int(k): v for k, v in state_data.get("scores", {}).items()},
+                game_over=state_data.get("game_over", False),
+                winner=state_data.get("winner"),
+                ticks_per_step=state_data.get("ticks_per_step", 10),
+            )
+        else:
+            state = await self.state()
         
         return TeeMultiStepResult(results=results, state=state)
     
