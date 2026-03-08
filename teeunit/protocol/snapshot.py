@@ -157,8 +157,16 @@ class SnapshotUnpacker:
     ) -> Optional[Snapshot]:
         """Unpack a snapshot from raw data.
         
+        Teeworlds 0.7 SNAPSINGLE/SNAP format:
+        1. CRC (packed int) - checksum of snapshot
+        2. part_size (packed int) - size of data part
+        3. num_deleted (packed int)
+        4. deleted keys (packed ints)
+        5. num_updated (packed int)
+        6. items: type_id, item_id, data...
+        
         Args:
-            data: Raw snapshot data
+            data: Raw snapshot data (after tick/delta_tick)
             tick: Current tick
             delta_tick: Reference tick for delta (-1 = full snapshot)
             
@@ -178,14 +186,18 @@ class SnapshotUnpacker:
         unpacker = Unpacker(data)
 
         try:
+            # Read CRC (we don't validate it currently)
+            crc = unpacker.get_int()
+            
+            # Read part size (tells us how much data follows)
+            part_size = unpacker.get_int()
+            
             # Read number of deleted items
             num_deleted = unpacker.get_int()
 
             # Read deleted item keys
-            deleted_keys = []
             for _ in range(num_deleted):
                 key = unpacker.get_int()
-                deleted_keys.append(key)
                 # Remove from snapshot
                 snapshot.items.pop(key, None)
 
@@ -197,11 +209,12 @@ class SnapshotUnpacker:
                 type_id = unpacker.get_int()
                 item_id = unpacker.get_int()
 
-                # Get expected size
+                # Get expected size from our known object sizes
                 size = NETOBJ_SIZES.get(type_id, 0)
                 if size == 0:
-                    # Unknown type, try to read size
-                    size = unpacker.get_int()
+                    # Unknown type - skip this item
+                    # We can't reliably parse without knowing size
+                    continue
 
                 # Read data ints
                 item_data = []
