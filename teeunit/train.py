@@ -223,7 +223,8 @@ if HAS_SB3:
                 intensity = np.clip((pickup[2] + 1) / 5.0, 0, 1)
                 img[py, px, 3] = max(img[py, px, 3], max(0.5, intensity))
         
-        return img
+        # Convert to uint8 (0-255) for NatureCNN compatibility
+        return (img * 255).astype(np.uint8)
     
     class TeeUnitGymEnv(gym.Env):
         """
@@ -273,20 +274,21 @@ if HAS_SB3:
             # Observation space
             if use_cnn:
                 # Image observation for CNN: 64x64x4 (channel-last for SB3)
+                # NatureCNN requires uint8 dtype with 0-255 range!
                 if single_agent_mode:
                     self.observation_space = spaces.Box(
-                        low=0.0,
-                        high=1.0,
+                        low=0,
+                        high=255,
                         shape=(IMG_SIZE, IMG_SIZE, IMG_CHANNELS),
-                        dtype=np.float32,
+                        dtype=np.uint8,
                     )
                 else:
                     # Multi-agent: batch of images
                     self.observation_space = spaces.Box(
-                        low=0.0,
-                        high=1.0,
+                        low=0,
+                        high=255,
                         shape=(num_agents, IMG_SIZE, IMG_SIZE, IMG_CHANNELS),
-                        dtype=np.float32,
+                        dtype=np.uint8,
                     )
             else:
                 # Original flat observation
@@ -410,8 +412,8 @@ if HAS_SB3:
                 obs = observations.get(self.agent_id)
                 if obs is None:
                     if self.use_cnn:
-                        # Channel-last format: (H, W, C)
-                        return np.zeros((IMG_SIZE, IMG_SIZE, IMG_CHANNELS), dtype=np.float32)
+                        # Channel-last format: (H, W, C) with uint8 for NatureCNN
+                        return np.zeros((IMG_SIZE, IMG_SIZE, IMG_CHANNELS), dtype=np.uint8)
                     return np.zeros(195, dtype=np.float32)
                 tensor = obs.to_tensor()
                 if self.use_cnn:
@@ -424,8 +426,8 @@ if HAS_SB3:
                     obs = observations.get(agent_id)
                     if obs is None:
                         if self.use_cnn:
-                            # Channel-last format: (H, W, C)
-                            obs_list.append(np.zeros((IMG_SIZE, IMG_SIZE, IMG_CHANNELS), dtype=np.float32))
+                            # Channel-last format: (H, W, C) with uint8 for NatureCNN
+                            obs_list.append(np.zeros((IMG_SIZE, IMG_SIZE, IMG_CHANNELS), dtype=np.uint8))
                         else:
                             obs_list.append(np.zeros(195, dtype=np.float32))
                     else:
