@@ -307,6 +307,16 @@ STUCK! Go left to escape. Reply: move_left"""
             return f"""Game: {game_state_text}
 Actions: move_left, move_right, jump, hammer, shoot_gun, hook
 STUCK! Go right to escape. Reply: move_right"""
+        elif "close" in game_state_text:
+            # Enemy is close - encourage combat!
+            return f"""Game: {game_state_text}
+Actions: move_left, move_right, jump, hammer, shoot_gun, hook
+Enemy close! ATTACK with hammer or shoot_gun. Reply:"""
+        elif "medium" in game_state_text:
+            # Enemy at medium range - shoot!
+            return f"""Game: {game_state_text}
+Actions: move_left, move_right, jump, hammer, shoot_gun, hook
+Enemy in range! Use shoot_gun. Reply:"""
         else:
             return f"""Game: {game_state_text}
 Actions: move_left, move_right, jump, hammer, shoot_gun, hook
@@ -522,16 +532,25 @@ Examples:
                     # Get action immediately (uses result if ready, else fallback)
                     action = agent.get_action(bot_id)
                     
-                    # Log what action was taken
-                    if step % 5 == 0:
+                    # Log what action was taken (every 5 steps, or always for combat actions)
+                    is_combat = action['name'] in ('hammer', 'shoot_gun', 'hook')
+                    if step % 5 == 0 or is_combat:
                         char = game_state.get_character(bot_id)
                         hp = char.health if char else 0
-                        logger.info(f"  Bot{bot_id} (hp={hp}): '{action['name']}'")
+                        if is_combat:
+                            logger.info(f"  Bot{bot_id} (hp={hp}): '{action['name']}' fire_count={fire_counts[bot_id]+1} **COMBAT**")
+                        else:
+                            logger.info(f"  Bot{bot_id} (hp={hp}): '{action['name']}'")
                     
                     new_input, fire_counts[bot_id] = action_to_input(
                         action, current_inputs[bot_id], fire_counts[bot_id],
                         game_state, bot_id
                     )
+                    
+                    # Extra debug: log the actual PlayerInput values when shooting
+                    if is_combat:
+                        logger.debug(f"    -> fire={new_input.fire}, weapon={new_input.wanted_weapon}, target=({new_input.target_x}, {new_input.target_y})")
+                    
                     current_inputs[bot_id] = new_input
                     inputs[bot_id] = new_input
                 
