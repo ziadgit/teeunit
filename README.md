@@ -1,287 +1,284 @@
 # TeeUnit: Multi-Agent Arena Environment
 
-A turn-based multi-agent deathmatch environment for LLM reinforcement learning, inspired by [Teeworlds](https://www.teeworlds.com/). Built on the [OpenEnv](https://github.com/meta-pytorch/OpenEnv) framework.
+A multi-agent deathmatch environment for LLM reinforcement learning, powered by the real [Teeworlds](https://www.teeworlds.com/) game engine. Built on the [OpenEnv](https://github.com/meta-pytorch/OpenEnv) framework.
 
 [![OpenEnv Compatible](https://img.shields.io/badge/OpenEnv-Compatible-blue)](https://github.com/meta-pytorch/OpenEnv)
-[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-green.svg)](LICENSE)
+[![Teeworlds 0.7.5](https://img.shields.io/badge/Teeworlds-0.7.5-orange)](https://github.com/teeworlds/teeworlds)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ---
 
 ## Overview
 
-TeeUnit is designed for **multi-agent reinforcement learning research**, specifically targeting:
+TeeUnit wraps the **real Teeworlds 0.7.5 game server** with Python bot clients, exposing it as an OpenEnv-compatible environment for **multi-agent reinforcement learning research**.
 
-- **Theory-of-mind reasoning**: Agents must predict opponent behavior
-- **Emergent strategic behavior**: Ambush tactics, resource denial, positioning
-- **Competitive multi-agent dynamics**: 4 agents in free-for-all combat
+### Why Real Teeworlds?
+
+- **Authentic physics**: Proper momentum, hook mechanics, projectile behavior
+- **Battle-tested netcode**: Robust UDP protocol with delta compression
+- **Rich game state**: Full snapshot data (positions, velocities, weapons, projectiles)
+- **Extensible**: Access to all Teeworlds game modes and maps
 
 ### Key Features
 
-- **Turn-based combat**: Discretized actions for LLM compatibility
-- **Partial observability**: Agents only see within their vision radius
+- **Turn-based mode**: Configurable ticks-per-step for LLM compatibility
+- **4 bot agents**: Connect as real game clients via Teeworlds protocol
+- **Full observability from snapshots**: Positions, health, weapons, projectiles
 - **Simple K/D rewards**: Clear reward signal for training
-- **OpenEnv compatible**: Works with TRL, torchforge, Unsloth, and more
-- **Deployable**: Ready for HuggingFace Spaces and Northflank
+- **OpenEnv compatible**: Works with TRL, torchforge, and more
+- **Docker deployable**: Ready for HuggingFace Spaces and Northflank
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      Docker Container                           │
+│                                                                 │
+│  ┌──────────────────┐         ┌─────────────────────────────┐  │
+│  │ Teeworlds Server │◄──UDP──►│  TeeUnit Bot Manager        │  │
+│  │ (teeworlds_srv)  │         │  ┌─────────────────────┐    │  │
+│  │                  │         │  │ Bot Client 0        │    │  │
+│  │ - DM mode        │         │  │ Bot Client 1        │    │  │
+│  │ - 4 players      │         │  │ Bot Client 2        │    │  │
+│  │ - dm1 map        │         │  │ Bot Client 3        │    │  │
+│  └──────────────────┘         │  └─────────────────────┘    │  │
+│                               │                             │  │
+│                               │  ┌─────────────────────┐    │  │
+│                               │  │ FastAPI Server      │    │  │
+│                               │  │ (OpenEnv API)       │    │  │
+│                               │  └─────────────────────┘    │  │
+│                               └─────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+                                           │
+                                           │ HTTP/WebSocket
+                                           ▼
+                                  ┌─────────────────────┐
+                                  │ External Client     │
+                                  │ (LLM Agent)         │
+                                  └─────────────────────┘
+```
 
 ---
 
 ## Quick Start
 
-### Installation
+### Docker (Recommended)
 
 ```bash
-# Install from GitHub
-pip install git+https://github.com/ziadgit/teeunit.git
+# Pull and run
+docker pull ghcr.io/ziadgit/teeunit:latest
+docker run -p 7860:7860 ghcr.io/ziadgit/teeunit:latest
 
-# Or clone and install locally
+# Or build locally
 git clone https://github.com/ziadgit/teeunit.git
 cd teeunit
-pip install -e .
+docker build -t teeunit:latest .
+docker run -p 7860:7860 teeunit:latest
 ```
 
-### Basic Usage
+### Python Client
 
-```python
-import asyncio
-from teeunit import TeeAction, TeeEnv
-
-async def main():
-    # Connect to a running TeeUnit server
-    async with TeeEnv(base_url="https://your-deployment-url") as env:
-        # Reset starts a new match
-        result = await env.reset()
-        print(f"Match started! Episode: {result.observation.episode_id}")
-        
-        # Game loop - each agent takes actions
-        while not result.done:
-            for agent_id in range(4):
-                # Get observation for this agent
-                obs = result.observation
-                
-                # Decide action based on observation
-                action = TeeAction(
-                    agent_id=agent_id,
-                    action_type="move",
-                    direction="north"
-                )
-                
-                result = await env.step(action)
-                print(f"Agent {agent_id}: {obs.text_description}")
-
-asyncio.run(main())
+```bash
+pip install git+https://github.com/ziadgit/teeunit.git
 ```
 
-### Synchronous Usage
-
 ```python
-from teeunit import TeeAction, TeeEnv
+from teeunit import TeeEnv, TeeInput
 
-with TeeEnv(base_url="https://your-deployment-url").sync() as env:
-    result = env.reset()
+# Connect to running server
+with TeeEnv(base_url="http://localhost:7860").sync() as env:
+    # Reset starts a new match
+    observations = env.reset()
     
-    action = TeeAction(agent_id=0, action_type="shoot", target_x=5, target_y=5)
-    result = env.step(action)
-    print(result.observation.text_description)
+    while True:
+        # Collect actions for all agents
+        actions = {}
+        for agent_id, obs in observations.items():
+            # Your LLM policy here
+            actions[agent_id] = TeeInput(
+                direction=1,      # Move right
+                target_x=100,     # Aim right
+                target_y=0,
+                fire=True         # Shoot!
+            )
+        
+        # Step all agents simultaneously
+        results = env.step_all(actions)
+        
+        # Check if episode ended
+        state = env.state()
+        if state.done:
+            print(f"Match ended! Scores: {state.scores}")
+            break
+        
+        # Update observations for next step
+        observations = {agent_id: r[0] for agent_id, r in results.items()}
 ```
 
 ---
 
-## Game Mechanics
+## Input Format
 
-### Arena
+Actions map directly to Teeworlds `PlayerInput`:
 
-- **Grid size**: 20x20 cells (configurable)
-- **Terrain types**: 
-  - `empty`: Walkable space
-  - `wall`: Blocks movement and line-of-sight
-  - `water`: Damaging terrain (5 HP/turn)
-  - `platform`: Elevated terrain
+```python
+@dataclass
+class TeeInput:
+    direction: int = 0      # -1 (left), 0 (none), 1 (right)
+    target_x: int = 0       # Aim X (relative to player position)
+    target_y: int = 0       # Aim Y (relative to player position)
+    jump: bool = False      # Jump this tick
+    fire: bool = False      # Fire weapon this tick
+    hook: bool = False      # Grappling hook this tick
+    wanted_weapon: int = 0  # 0=keep, 1=hammer, 2=gun, 3=shotgun, 4=grenade, 5=laser
+```
 
-### Agents
+### Example Actions
 
-Each match has **4 agents** competing in free-for-all deathmatch.
+```python
+# Move right and jump
+TeeInput(direction=1, jump=True)
 
-| Attribute | Value | Description |
-|-----------|-------|-------------|
-| Health | 100 | Reduced by damage, 0 = death |
-| Armor | 0-100 | Absorbs 50% of incoming damage |
-| Vision | 6 cells | Radius of visibility |
-| Spawn protection | 3 turns | Invulnerable after respawn |
+# Aim up-right and fire
+TeeInput(target_x=100, target_y=-100, fire=True)
 
-### Actions
+# Switch to shotgun
+TeeInput(wanted_weapon=3)
 
-Agents choose one action per turn:
-
-| Action | Parameters | Description |
-|--------|------------|-------------|
-| `move` | `direction` | Move 1 cell in direction (n/s/e/w/ne/nw/se/sw) |
-| `shoot` | `target_x`, `target_y` | Fire current weapon at target |
-| `switch_weapon` | `weapon` | Change to specified weapon |
-| `use_item` | - | Use picked up item (health pack, etc.) |
-| `wait` | - | Do nothing this turn |
-
-### Weapons
-
-| Weapon | Damage | Range | Ammo | Notes |
-|--------|--------|-------|------|-------|
-| Pistol | 15 | 8 cells | ∞ | Default weapon, reliable |
-| Shotgun | 30 | 4 cells | 10 | High damage, close range |
-| Laser | 25 | 12 cells | 5 | Instant hit, long range |
-| Hammer | 50 | 1 cell | ∞ | Melee, devastating |
-
-### Pickups
-
-Spawn randomly on the arena and respawn after 10 turns:
-
-| Pickup | Effect |
-|--------|--------|
-| Health Pack | +25 health |
-| Armor | +50 armor |
-| Shotgun Ammo | +5 shells |
-| Laser Ammo | +3 charges |
-
-### Vision & Partial Observability
-
-- **Vision radius**: 6 cells from agent position
-- **Line-of-sight**: Blocked by walls
-- **Sound events**: Shots heard within 10 cells (direction only)
-- **Memory**: Last known enemy positions tracked for 3 turns
+# Grappling hook to the right
+TeeInput(target_x=200, target_y=0, hook=True)
+```
 
 ---
 
-## Observations
+## Observation Format
 
-Each agent receives an observation tailored to their perspective:
+Observations are extracted from Teeworlds game snapshots:
 
 ```python
 @dataclass
 class TeeObservation:
-    agent_id: int                      # Which agent (0-3)
-    position: Tuple[int, int]          # Current (x, y) position
-    health: int                        # Current health (0-100)
-    armor: int                         # Current armor (0-100)
-    current_weapon: str                # Equipped weapon name
-    ammo: Dict[str, int]               # Ammo per weapon type
-    visible_enemies: List[Dict]        # Enemies in line-of-sight
-    visible_pickups: List[Dict]        # Pickups in line-of-sight
-    nearby_obstacles: List[Tuple]      # Wall positions nearby
-    recent_events: List[str]           # Combat log entries
-    turn_number: int                   # Current turn
-    your_kills: int                    # Total kills this match
-    your_deaths: int                   # Total deaths this match
-    text_description: str              # Natural language summary
+    agent_id: int
+    tick: int                          # Current game tick
+    
+    # Player state (from Character snapshot object)
+    position: Tuple[int, int]          # (x, y) in game units
+    velocity: Tuple[int, int]          # (vx, vy) 
+    angle: int                         # Aim angle (0-360)
+    health: int                        # 0-10
+    armor: int                         # 0-10
+    weapon: int                        # Current weapon ID
+    ammo: int                          # Ammo for current weapon
+    
+    # Score (from PlayerInfo snapshot object)
+    score: int
+    
+    # Visible entities (from snapshot)
+    visible_players: List[PlayerState] # Other players in snapshot
+    visible_projectiles: List[Projectile]
+    visible_pickups: List[Pickup]
+    
+    # Game state
+    game_state_flags: int              # Warmup, paused, etc.
 ```
 
-### Example Text Description
+### Coordinate System
 
+- **Game units**: Teeworlds uses high-resolution coordinates (1 tile = 32 units)
+- **Origin**: Top-left of map
+- **Positive X**: Right
+- **Positive Y**: Down
+
+---
+
+## Weapons
+
+| ID | Weapon | Damage | Fire Rate | Notes |
+|----|--------|--------|-----------|-------|
+| 0 | Hammer | 50 | Slow | Melee, knockback |
+| 1 | Gun (Pistol) | 15 | Fast | Default, infinite ammo |
+| 2 | Shotgun | 30 | Medium | Spread shot |
+| 3 | Grenade | 45 | Slow | Explosive, area damage |
+| 4 | Laser | 25 | Fast | Instant hit, bounces |
+| 5 | Ninja | 90 | Special | Powerup only |
+
+---
+
+## Turn-Based Mode
+
+Teeworlds runs at 50 ticks/second. TeeUnit buffers ticks to create discrete "steps":
+
+```python
+# Configure ticks per step (default: 10 = 200ms per step)
+env = TeeEnv(base_url="...", ticks_per_step=10)
+
+# Each step() call:
+# 1. Sends your input for N ticks
+# 2. Waits for N ticks to elapse
+# 3. Returns the final observation
 ```
-Turn 15 | Position: (8, 12) | Health: 75/100 | Armor: 25
-Weapon: Shotgun (8 ammo)
 
-VISIBLE ENEMIES:
-- Agent 2 at (10, 14), ~30 health, 3 cells away (northeast)
-- Agent 0 at (5, 10), ~80 health, 4 cells away (southwest)
-
-PICKUPS NEARBY:
-- Health Pack at (9, 13), 2 cells away
-
-RECENT EVENTS:
-- You hit Agent 2 for 30 damage!
-- Agent 3 was eliminated by Agent 1
-
-Your score: 2 kills, 1 death
-```
+This makes the environment compatible with LLM inference latency while preserving authentic game physics.
 
 ---
 
 ## Rewards
 
-Simple kill/death reward structure:
-
 | Event | Reward |
 |-------|--------|
 | Kill enemy | +10.0 |
-| Assist (damaged enemy killed by another) | +3.0 |
 | Death | -5.0 |
 | Damage dealt | +0.1 per HP |
-| Survival bonus (per turn alive) | +0.1 |
-| Match victory (most kills at end) | +20.0 |
+
+Rewards are calculated from `Sv_KillMsg` network messages and health delta tracking.
 
 ---
 
-## Episode Structure
+## Configuration
 
-### Start Conditions
-- 4 agents spawn at predefined spawn points
-- Each agent starts with 100 HP, 0 armor, pistol equipped
-- Pickups spawn at random locations
+```python
+# At reset, configure the match
+observations = env.reset(config={
+    "map": "dm1",              # Map name
+    "max_turns": 100,          # Episode length (in steps)
+    "max_kills": 10,           # Episode ends if any agent reaches this
+    "ticks_per_step": 10,      # Game ticks per API step
+    "num_agents": 4,           # Number of bot agents (1-8)
+})
+```
 
-### Turn Resolution Order
-1. All agents submit actions (with timeout)
-2. Movement resolved (collision detection)
-3. Weapon switches applied
-4. Shots fired and damage calculated
-5. Deaths registered, respawn queued
-6. Pickups collected
-7. Observations generated
-8. Turn counter incremented
+### Server Configuration
 
-### End Conditions
-- **Turn limit**: Match ends after 100 turns (configurable)
-- **Dominance**: One agent reaches 10 kills
-- Winner = agent with most kills (ties broken by deaths, then damage dealt)
+The Teeworlds server is configured via `teeworlds.cfg`:
+
+```
+sv_name "TeeUnit Arena"
+sv_gametype dm
+sv_map dm1
+sv_max_clients 8
+sv_register 0
+sv_rcon_password "teeunit"
+```
 
 ---
 
-## Training Integration
+## API Reference
 
-### With TRL (Hugging Face)
+### HTTP Endpoints
 
-```python
-from trl import GRPOTrainer
-from teeunit import TeeEnv, TeeAction
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/reset` | POST | Start new match |
+| `/step` | POST | Execute action for one agent |
+| `/step_all` | POST | Execute actions for all agents |
+| `/state` | GET | Get full game state |
+| `/health` | GET | Health check |
 
-# See examples/trl_training.py for full implementation
-```
+### WebSocket
 
-### With torchforge (PyTorch)
-
-```python
-from torchforge import GRPOTrainer
-from teeunit import TeeEnv
-
-# See examples/torchforge_training.py for full implementation
-```
-
-### Multi-Agent Training Pattern
-
-```python
-async def collect_trajectory(env, agents):
-    """Collect a full episode trajectory for all agents."""
-    result = await env.reset()
-    trajectories = {i: [] for i in range(4)}
-    
-    while not result.done:
-        for agent_id in range(4):
-            # Get agent's observation
-            obs = await env.get_observation(agent_id)
-            
-            # Agent decides action (your LLM policy here)
-            action = agents[agent_id].act(obs.text_description)
-            
-            # Execute action
-            result = await env.step(action)
-            
-            # Store transition
-            trajectories[agent_id].append({
-                'observation': obs,
-                'action': action,
-                'reward': result.reward,
-                'done': result.done
-            })
-    
-    return trajectories
-```
+Connect to `/ws` for real-time streaming updates.
 
 ---
 
@@ -289,153 +286,88 @@ async def collect_trajectory(env, agents):
 
 ### HuggingFace Spaces
 
-```bash
-# Login to Hugging Face
-huggingface-cli login
-
-# Deploy using OpenEnv CLI
-cd teeunit
-openenv push --repo-id your-username/teeunit
+```yaml
+# In your Space's README.md
+sdk: docker
+app_port: 7860
 ```
 
-### Northflank (Docker)
+### Northflank
 
 ```bash
-# Build the Docker image
-docker build -t teeunit:latest -f server/Dockerfile .
-
-# Run locally
-docker run -p 8000:8000 teeunit:latest
-
-# Push to your container registry
-docker tag teeunit:latest your-registry/teeunit:latest
-docker push your-registry/teeunit:latest
+# Deploy as a Docker service
+docker build -t teeunit .
+# Push to your container registry and deploy
 ```
 
 ### Local Development
 
 ```bash
-# Install dependencies
+# Install with dev dependencies
 pip install -e ".[dev]"
 
-# Run server locally
-uvicorn teeunit.server.app:app --host 0.0.0.0 --port 8000 --reload
-
 # Run tests
-pytest tests/ -v
+pytest teeunit/tests/ -v
+
+# The full environment requires Docker (for Teeworlds server)
+docker build -t teeunit . && docker run -p 7860:7860 teeunit
 ```
 
 ---
 
-## Configuration
+## Protocol Implementation
 
-Environment behavior can be configured at reset:
+TeeUnit implements the Teeworlds 0.7 network protocol in Python:
 
-```python
-result = await env.reset(config={
-    "arena_width": 20,
-    "arena_height": 20,
-    "max_turns": 100,
-    "num_agents": 4,
-    "vision_radius": 6,
-    "spawn_protection_turns": 3,
-    "pickup_respawn_turns": 10,
-    "win_kill_threshold": 10,
-})
-```
+- **UDP client**: Connection handshake, keepalive, reconnection
+- **Huffman compression**: For packet payload
+- **Variable-int packing**: Teeworlds integer encoding
+- **Snapshot parsing**: Delta-compressed game state
+- **Input sending**: `NETMSG_INPUT` with `PlayerInput` structure
 
----
-
-## API Reference
-
-### Environment Methods
-
-| Method | Description |
-|--------|-------------|
-| `reset(config?)` | Start new match, returns initial observations |
-| `step(action)` | Execute action, returns StepResult |
-| `state()` | Get current episode state |
-| `get_observation(agent_id)` | Get specific agent's observation |
-
-### TeeAction Fields
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `agent_id` | int | Yes | Agent taking action (0-3) |
-| `action_type` | str | Yes | "move", "shoot", "switch_weapon", "use_item", "wait" |
-| `direction` | str | For move | "n", "s", "e", "w", "ne", "nw", "se", "sw" |
-| `target_x` | int | For shoot | Target X coordinate |
-| `target_y` | int | For shoot | Target Y coordinate |
-| `weapon` | str | For switch | "pistol", "shotgun", "laser", "hammer" |
-
-### StepResult Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `observation` | TeeObservation | Agent's new observation |
-| `reward` | float | Reward for this step |
-| `done` | bool | Whether episode ended |
-| `info` | dict | Additional metadata |
-
----
-
-## Multi-Agent Scenarios
-
-TeeUnit is designed as a showcase for multi-agent LLM training:
-
-### Competition
-- Agents compete for kills and survival
-- Zero-sum dynamics encourage strategic play
-- Emergent behaviors: camping, baiting, third-party attacks
-
-### Theory of Mind
-- Partial observability requires modeling opponent intentions
-- "If I move here, what will Agent 2 do?"
-- Predicting enemy positions based on last known location + time
-
-### Strategic Depth
-- Weapon selection based on engagement distance
-- Resource control (denying health packs to damaged enemies)
-- Positioning advantages (corners, sight lines)
+Based on protocol documentation and reference implementations.
 
 ---
 
 ## Roadmap
 
-- [x] Core environment implementation
-- [x] Partial observability
-- [x] Simple K/D rewards
-- [ ] Team-based modes (2v2)
-- [ ] Capture the Flag mode
-- [ ] Inter-agent communication (chat actions)
+- [x] Core environment with Python simulation
+- [x] OpenEnv API compatibility
+- [ ] **Real Teeworlds integration** (in progress)
+  - [ ] Protocol implementation
+  - [ ] Bot client manager
+  - [ ] Snapshot parsing
+  - [ ] Turn-based tick buffering
+- [ ] Team-based modes (TDM, CTF)
 - [ ] Custom map support
-- [ ] Replay visualization
+- [ ] Replay recording/playback
+- [ ] Multi-server scaling
 
 ---
 
 ## Contributing
 
-Contributions are welcome! Please see our contribution guidelines:
+Contributions are welcome! Key areas:
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Run tests: `pytest tests/ -v`
-5. Submit a pull request
+1. **Protocol implementation**: Snapshot parsing, edge cases
+2. **Bot AI**: Baseline policies for benchmarking
+3. **Documentation**: Examples, tutorials
+4. **Testing**: Integration tests, CI/CD
 
 ---
 
 ## License
 
-BSD 3-Clause License. See [LICENSE](LICENSE) for details.
+MIT License. See [LICENSE](LICENSE) for details.
 
 ---
 
 ## Acknowledgments
 
-- [Teeworlds](https://www.teeworlds.com/) - Inspiration for game mechanics
+- [Teeworlds](https://www.teeworlds.com/) - The game engine
+- [teeworlds_py](https://github.com/Myr-13/teeworlds_py) - Protocol reference
 - [OpenEnv](https://github.com/meta-pytorch/OpenEnv) - Environment framework
-- [Gymnasium](https://gymnasium.farama.org/) - API design inspiration
+- [DDNet](https://ddnet.org/) - Protocol documentation
 
 ---
 
