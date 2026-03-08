@@ -247,7 +247,7 @@ Reply with ONE action name only:"""
                     "num_predict": 10,  # Very short response
                 }
             },
-            timeout=3.0,  # Short timeout to prevent bot disconnection
+            timeout=8.0,  # Allow time for queued requests
         )
         
         if response.status_code == 200:
@@ -359,7 +359,7 @@ Examples:
     else:
         hf_token = None
     
-    num_bots = max(1, min(4, args.num_bots))  # Limit to 4 for LLM (API rate limits)
+    num_bots = max(1, min(3, args.num_bots))  # Limit to 3 (server max players)
     
     # Create LLM agent (shared between all bots)
     agent = LLMAgent(
@@ -401,7 +401,6 @@ Examples:
         
         episode = 0
         total_steps = 0
-        llm_decisions = 0
         
         while True:
             episode += 1
@@ -412,8 +411,10 @@ Examples:
                 inputs: Dict[int, PlayerInput] = {}
                 
                 for bot_id in range(num_bots):
-                    # Start async LLM request (non-blocking)
-                    agent.start_action_request(game_state, bot_id)
+                    # Stagger LLM requests: only 1 bot queries per step (round-robin)
+                    # This prevents Ollama from getting overwhelmed with concurrent requests
+                    if step % num_bots == bot_id:
+                        agent.start_action_request(game_state, bot_id)
                     
                     # Get action immediately (uses result if ready, else fallback)
                     action = agent.get_action(bot_id)
