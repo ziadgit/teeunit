@@ -1,0 +1,46 @@
+{
+  "name": "TeeUnit GPU Training",
+  "id": "teeunit-gpu-training",
+  "description": "Self-play RL training for TeeUnit with H100 GPU",
+  "billing": {
+    "deploymentPlan": "nf-gpu-hack-16-192-gpu"
+  },
+  "deployment": {
+    "region": "meta-openenv",
+    "external": {
+      "imagePath": "ghcr.io/ziadgit/teeunit-gpu:v3",
+      "registryProvider": "custom",
+      "privateImage": false
+    },
+    "storage": {
+      "ephemeralStorage": {
+        "storageSize": 51200
+      },
+      "shmSize": 64
+    },
+    "docker": {
+      "configType": "customCommand",
+      "customCommand": "python3.11 -m teeunit.train train --steps 500000 --device cuda --save-path /app/models --single-agent --upload-hf --hf-repo ziadbc/teeunit-agent"
+    },
+    "gpu": {
+      "enabled": true,
+      "configuration": {
+        "gpuType": "h100-80",
+        "gpuCount": 1,
+        "timesliced": false,
+        "gpuProvider": "NVIDIA"
+      }
+    }
+  },
+  "runtimeEnvironment": {
+    "CUDA_VISIBLE_DEVICES": "0",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "runtimeSecrets": [
+    {
+      "id": "hf-token",
+      "secretType": "environment"
+    }
+  ],
+  "backoffLimit": 0
+}
