@@ -167,6 +167,18 @@ class BotManager:
         """Handle a snapshot from a bot's perspective."""
         bot.last_snapshot_tick = snapshot.tick
         
+        # Auto-detect real client ID if not found yet
+        # The server assigns IDs that may differ from our bot_id
+        if bot.character is None and bot.client_id not in snapshot.characters:
+            # Find a character ID that isn't claimed by another bot
+            claimed_ids = {b.client_id for b in self.bots.values() if b.character is not None}
+            for char_id in snapshot.characters:
+                if char_id not in claimed_ids:
+                    # Found an unclaimed character - this is likely ours
+                    logger.debug(f"Auto-detected client_id {char_id} for bot (was {bot.client_id})")
+                    bot.client_id = char_id
+                    break
+        
         # Update bot's character state
         if bot.client_id in snapshot.characters:
             bot.character = snapshot.characters[bot.client_id]

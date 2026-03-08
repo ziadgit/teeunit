@@ -94,6 +94,12 @@ class LLMAgent:
         self.pending_futures: Dict[int, Any] = {}  # bot_id -> future
         self.last_actions: Dict[int, Dict] = {}  # bot_id -> last action (for repeat)
         
+        # Position history for stuck detection
+        self.position_history: Dict[int, List[Tuple[int, int]]] = {}  # bot_id -> [(x, y), ...]
+        self.stuck_threshold = 50  # If moved less than this in N steps, consider stuck
+        self.history_length = 5  # Number of positions to track
+        self.last_move_direction: Dict[int, str] = {}  # bot_id -> "left" or "right"
+        
         if provider == "ollama":
             # Ollama uses direct HTTP calls (OpenAI-compatible API)
             self.api_url = f"{ollama_url}/api/chat"
@@ -144,6 +150,8 @@ class LLMAgent:
         """
         import random
         
+        action = None
+        
         # Check if we have a completed future
         if bot_id in self.pending_futures:
             future = self.pending_futures[bot_id]
@@ -154,18 +162,52 @@ class LLMAgent:
                         action = self._parse_action(generated_text)
                         if action:
                             self.last_actions[bot_id] = action
-                            return action
                 except Exception as e:
                     logger.debug(f"LLM error for bot {bot_id}: {e}")
                 finally:
                     del self.pending_futures[bot_id]
         
         # No result yet - use last action or random
-        if bot_id in self.last_actions:
-            return self.last_actions[bot_id]
+        if action is None:
+            if bot_id in self.last_actions:
+                action = self.last_actions[bot_id]
+            else:
+                # First time - pick random action
+                action = random.choice(ACTIONS)
         
-        # First time - pick random action
-        return random.choice(ACTIONS)
+        # Anti-stuck override: if stuck and action isn't a movement, force escape direction
+        if self._is_stuck(bot_id) and action["name"] not in ("move_left", "move_right"):
+            last_dir = self.last_move_direction.get(bot_id, "right")
+            if last_dir == "right":
+                action = ACTIONS[0]  # move_left
+                logger.debug(f"Bot{bot_id} stuck override: forcing move_left")
+            else:
+                action = ACTIONS[1]  # move_right
+                logger.debug(f"Bot{bot_id} stuck override: forcing move_right")
+        
+        # Track last move direction for stuck escape
+        if action["name"] == "move_left":
+            self.last_move_direction[bot_id] = "left"
+        elif action["name"] == "move_right":
+            self.last_move_direction[bot_id] = "right"
+        
+        return action
+    
+    def _is_stuck(self, bot_id: int) -> bool:
+        """Check if bot is currently stuck based on position history.
+        
+        Only checks X movement since Y changes from jumping but doesn't help escape walls.
+        """
+        if bot_id not in self.position_history:
+            return False
+        history = self.position_history[bot_id]
+        if len(history) < self.history_length:
+            return False
+        oldest_pos = history[0]
+        current_pos = history[-1]
+        # Only check X movement - jumping (Y) doesn't help escape walls
+        dx_total = abs(current_pos[0] - oldest_pos[0])
+        return dx_total < self.stuck_threshold
     
     def _parse_action(self, generated_text: str) -> Optional[Dict[str, Any]]:
         """Parse action from LLM response."""
@@ -199,6 +241,24 @@ class LLMAgent:
         if not character:
             return "Dead. Respawning."
         
+        # Update position history for stuck detection
+        current_pos = (character.x, character.y)
+        if bot_id not in self.position_history:
+            self.position_history[bot_id] = []
+        
+        history = self.position_history[bot_id]
+        history.append(current_pos)
+        if len(history) > self.history_length:
+            history.pop(0)
+        
+        # Detect if stuck (X position hasn't changed much - Y doesn't matter due to jumping)
+        is_stuck = False
+        if len(history) >= self.history_length:
+            oldest_pos = history[0]
+            dx_total = abs(current_pos[0] - oldest_pos[0])
+            if dx_total < self.stuck_threshold:
+                is_stuck = True
+        
         # Find nearest enemy - keep it super short
         nearest = None
         nearest_dist = float('inf')
@@ -215,7 +275,15 @@ class LLMAgent:
                     nearest = other_char
                     nearest_dir = "right" if dx > 0 else "left"
         
-        # Ultra compact format
+        # Ultra compact format with stuck indicator and escape direction
+        if is_stuck:
+            # Suggest opposite of last move direction
+            last_dir = self.last_move_direction.get(bot_id, "right")
+            escape_dir = "left" if last_dir == "right" else "right"
+            stuck_text = f" STUCK-go_{escape_dir}"
+        else:
+            stuck_text = ""
+        
         if nearest:
             if nearest_dist < 200:
                 range_word = "close"
@@ -223,14 +291,24 @@ class LLMAgent:
                 range_word = "medium"
             else:
                 range_word = "far"
-            return f"HP:{character.health} Enemy:{range_word},{nearest_dir}"
+            return f"HP:{character.health} Enemy:{range_word},{nearest_dir}{stuck_text}"
         else:
-            return f"HP:{character.health} No enemy"
+            return f"HP:{character.health} No enemy{stuck_text}"
     
     def _build_prompt(self, game_state_text: str) -> str:
         """Build a SHORT prompt for fast LLM response."""
         # Ultra-short prompt for speed (< 100 tokens)
-        return f"""Game: {game_state_text}
+        # Include stuck handling instruction with specific direction
+        if "STUCK-go_left" in game_state_text:
+            return f"""Game: {game_state_text}
+Actions: move_left, move_right, jump, hammer, shoot_gun, hook
+STUCK! Go left to escape. Reply: move_left"""
+        elif "STUCK-go_right" in game_state_text:
+            return f"""Game: {game_state_text}
+Actions: move_left, move_right, jump, hammer, shoot_gun, hook
+STUCK! Go right to escape. Reply: move_right"""
+        else:
+            return f"""Game: {game_state_text}
 Actions: move_left, move_right, jump, hammer, shoot_gun, hook
 Reply with ONE action name only:"""
 
