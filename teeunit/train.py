@@ -143,64 +143,85 @@ def upload_to_huggingface(
 if HAS_SB3:
     
     # Image observation dimensions for CNN policy
-    # We create a 4-channel 16x16 "image" from the state:
+    # We create a 64x64x4 "image" from the state (channel-last for SB3):
     # Channel 0: Self state (health, armor, ammo, position encoded)
-    # Channel 1: Player positions (rendered as gaussians)
+    # Channel 1: Player positions (rendered as points/gaussians)
     # Channel 2: Projectile positions
     # Channel 3: Pickup positions
-    IMG_SIZE = 16
+    # Note: NatureCNN requires minimum 36x36, we use 64x64 for better GPU utilization
+    IMG_SIZE = 64
     IMG_CHANNELS = 4
     
     def _tensor_to_image(tensor: np.ndarray) -> np.ndarray:
         """
-        Convert 195-dim observation tensor to 4x16x16 image for CNN.
+        Convert 195-dim observation tensor to 64x64x4 image for CNN.
         
         This creates a spatial representation that CNN can process effectively,
         utilizing GPU for convolution operations.
+        
+        Returns channel-last format (H, W, C) as expected by SB3.
         """
-        img = np.zeros((IMG_CHANNELS, IMG_SIZE, IMG_SIZE), dtype=np.float32)
+        # Create channel-last image (H, W, C)
+        img = np.zeros((IMG_SIZE, IMG_SIZE, IMG_CHANNELS), dtype=np.float32)
         
         # Channel 0: Self state encoded as pattern
         # 13 self features: x, y, vel_x, vel_y, health, armor, weapon, ammo, direction, grounded, alive, score, agent_id
         self_state = tensor[:13]
-        # Normalize and tile into a pattern
-        health_norm = self_state[4] / 10.0  # health normalized
-        armor_norm = self_state[5] / 10.0   # armor normalized
-        # Fill top-left quadrant with self state pattern
-        img[0, :4, :4] = health_norm
-        img[0, :4, 4:8] = armor_norm
-        img[0, :4, 8:12] = self_state[6] / 5.0  # weapon
-        img[0, :4, 12:] = (self_state[8] + 1) / 2.0  # direction normalized
+        # Normalize and tile into a pattern in the corners
+        health_norm = np.clip(self_state[4] / 10.0, 0, 1)  # health normalized
+        armor_norm = np.clip(self_state[5] / 10.0, 0, 1)   # armor normalized
+        weapon_norm = np.clip(self_state[6] / 5.0, 0, 1)   # weapon
+        dir_norm = np.clip((self_state[8] + 1) / 2.0, 0, 1)  # direction normalized
+        
+        # Fill quadrants with self state info (creates visual pattern)
+        img[:16, :16, 0] = health_norm
+        img[:16, 16:32, 0] = armor_norm
+        img[:16, 32:48, 0] = weapon_norm
+        img[:16, 48:, 0] = dir_norm
+        
+        # Also encode velocity as gradient in center
+        vel_x_norm = np.clip((self_state[2] / 500.0 + 1) / 2, 0, 1)
+        vel_y_norm = np.clip((self_state[3] / 500.0 + 1) / 2, 0, 1)
+        img[24:40, 24:40, 0] = vel_x_norm
+        img[24:40, 40:56, 0] = vel_y_norm
         
         # Channel 1: Visible players (70 features = 10 players x 7)
         # Features per player: rel_x, rel_y, vel_x, vel_y, health, weapon, team
         players = tensor[13:83].reshape(10, 7)
         for i, player in enumerate(players):
             if player[4] > 0:  # has health = visible
-                # Map relative position to image coords (assume +-500 range)
-                px = int(np.clip((player[0] / 1000.0 + 0.5) * IMG_SIZE, 0, IMG_SIZE-1))
-                py = int(np.clip((player[1] / 1000.0 + 0.5) * IMG_SIZE, 0, IMG_SIZE-1))
-                img[1, py, px] = player[4] / 10.0  # health as intensity
+                # Map relative position to image coords (assume +-1000 range)
+                px = int(np.clip((player[0] / 2000.0 + 0.5) * IMG_SIZE, 0, IMG_SIZE-1))
+                py = int(np.clip((player[1] / 2000.0 + 0.5) * IMG_SIZE, 0, IMG_SIZE-1))
+                # Draw a small cross/blob for each player (3x3)
+                intensity = np.clip(player[4] / 10.0, 0, 1)
+                for dx in range(-1, 2):
+                    for dy in range(-1, 2):
+                        nx, ny = px + dx, py + dy
+                        if 0 <= nx < IMG_SIZE and 0 <= ny < IMG_SIZE:
+                            img[ny, nx, 1] = max(img[ny, nx, 1], intensity)
         
         # Channel 2: Projectiles (64 features = 16 projectiles x 4)
         # Features: rel_x, rel_y, vel_x, vel_y
         projectiles = tensor[83:147].reshape(16, 4)
         for proj in projectiles:
             if proj[0] != 0 or proj[1] != 0:  # has position
-                px = int(np.clip((proj[0] / 1000.0 + 0.5) * IMG_SIZE, 0, IMG_SIZE-1))
-                py = int(np.clip((proj[1] / 1000.0 + 0.5) * IMG_SIZE, 0, IMG_SIZE-1))
+                px = int(np.clip((proj[0] / 2000.0 + 0.5) * IMG_SIZE, 0, IMG_SIZE-1))
+                py = int(np.clip((proj[1] / 2000.0 + 0.5) * IMG_SIZE, 0, IMG_SIZE-1))
                 # Encode velocity as intensity
                 vel = np.sqrt(proj[2]**2 + proj[3]**2)
-                img[2, py, px] = min(1.0, vel / 500.0)
+                intensity = np.clip(vel / 500.0, 0, 1)
+                img[py, px, 2] = max(img[py, px, 2], max(0.3, intensity))
         
         # Channel 3: Pickups (48 features = 16 pickups x 3)
         # Features: rel_x, rel_y, type
         pickups = tensor[147:195].reshape(16, 3)
         for pickup in pickups:
             if pickup[0] != 0 or pickup[1] != 0:
-                px = int(np.clip((pickup[0] / 1000.0 + 0.5) * IMG_SIZE, 0, IMG_SIZE-1))
-                py = int(np.clip((pickup[1] / 1000.0 + 0.5) * IMG_SIZE, 0, IMG_SIZE-1))
-                img[3, py, px] = (pickup[2] + 1) / 5.0  # type as intensity
+                px = int(np.clip((pickup[0] / 2000.0 + 0.5) * IMG_SIZE, 0, IMG_SIZE-1))
+                py = int(np.clip((pickup[1] / 2000.0 + 0.5) * IMG_SIZE, 0, IMG_SIZE-1))
+                intensity = np.clip((pickup[2] + 1) / 5.0, 0, 1)
+                img[py, px, 3] = max(img[py, px, 3], max(0.5, intensity))
         
         return img
     
@@ -211,9 +232,9 @@ if HAS_SB3:
         Designed for self-play training where all agents share the same policy.
         Uses CNN-friendly image observations to leverage GPU acceleration.
         
-        The observation is converted to a 4x16x16 image format:
-        - Channel 0: Self state (health, armor, weapon, direction)
-        - Channel 1: Enemy player positions
+        The observation is converted to a 64x64x4 image format (channel-last):
+        - Channel 0: Self state (health, armor, weapon, direction, velocity)
+        - Channel 1: Enemy player positions (3x3 blobs)
         - Channel 2: Projectile positions and velocities
         - Channel 3: Pickup positions and types
         """
@@ -251,12 +272,12 @@ if HAS_SB3:
             
             # Observation space
             if use_cnn:
-                # Image observation for CNN: 4 channels x 16x16
+                # Image observation for CNN: 64x64x4 (channel-last for SB3)
                 if single_agent_mode:
                     self.observation_space = spaces.Box(
                         low=0.0,
                         high=1.0,
-                        shape=(IMG_CHANNELS, IMG_SIZE, IMG_SIZE),
+                        shape=(IMG_SIZE, IMG_SIZE, IMG_CHANNELS),
                         dtype=np.float32,
                     )
                 else:
@@ -264,7 +285,7 @@ if HAS_SB3:
                     self.observation_space = spaces.Box(
                         low=0.0,
                         high=1.0,
-                        shape=(num_agents, IMG_CHANNELS, IMG_SIZE, IMG_SIZE),
+                        shape=(num_agents, IMG_SIZE, IMG_SIZE, IMG_CHANNELS),
                         dtype=np.float32,
                     )
             else:
@@ -389,7 +410,8 @@ if HAS_SB3:
                 obs = observations.get(self.agent_id)
                 if obs is None:
                     if self.use_cnn:
-                        return np.zeros((IMG_CHANNELS, IMG_SIZE, IMG_SIZE), dtype=np.float32)
+                        # Channel-last format: (H, W, C)
+                        return np.zeros((IMG_SIZE, IMG_SIZE, IMG_CHANNELS), dtype=np.float32)
                     return np.zeros(195, dtype=np.float32)
                 tensor = obs.to_tensor()
                 if self.use_cnn:
@@ -402,7 +424,8 @@ if HAS_SB3:
                     obs = observations.get(agent_id)
                     if obs is None:
                         if self.use_cnn:
-                            obs_list.append(np.zeros((IMG_CHANNELS, IMG_SIZE, IMG_SIZE), dtype=np.float32))
+                            # Channel-last format: (H, W, C)
+                            obs_list.append(np.zeros((IMG_SIZE, IMG_SIZE, IMG_CHANNELS), dtype=np.float32))
                         else:
                             obs_list.append(np.zeros(195, dtype=np.float32))
                     else:
