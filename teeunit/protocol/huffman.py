@@ -26,12 +26,10 @@ HUFFMAN_FREQ_TABLE = [
     151, 142, 167, 139, 152, 144, 176, 174, 125, 159, 123, 155, 199, 139, 175, 199,
     133, 152, 185, 183, 128, 117, 204, 134, 161, 135, 174, 155, 173, 127, 157, 160,
     113, 185, 151, 212, 219, 136, 108, 172, 200, 182, 151, 154, 132, 194, 123, 155,
-    EOF_SYMBOL := 256,
+    1 << 30,  # EOF symbol placeholder - will be used as frequency
 ]
 # fmt: on
 
-# Replace the inline EOF_SYMBOL with actual value
-HUFFMAN_FREQ_TABLE[-1] = 256
 EOF_SYMBOL = 256
 HUFFMAN_MAX_SYMBOLS = 257  # 256 bytes + EOF
 HUFFMAN_MAX_NODES = HUFFMAN_MAX_SYMBOLS * 2 - 1

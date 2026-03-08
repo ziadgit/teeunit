@@ -1,26 +1,26 @@
 """
 TeeUnit: Multi-Agent Arena Environment
 
-A turn-based multi-agent deathmatch environment for LLM reinforcement learning,
-inspired by Teeworlds. Built on the OpenEnv framework.
+A turn-based multi-agent deathmatch environment wrapping real Teeworlds,
+for LLM reinforcement learning. Built on the OpenEnv framework.
 """
 
 from .models import (
     # Enums
-    ActionType,
-    Direction,
     WeaponType,
-    TerrainType,
-    PickupType,
-    # Action/Observation/State
-    TeeAction,
+    WEAPON_NAMES,
+    # Input/Observation/State
+    TeeInput,
+    TeeAction,  # Alias for backwards compatibility
     TeeObservation,
     TeeState,
     StepResult,
     GameConfig,
     # Supporting types
-    VisibleEnemy,
+    VisiblePlayer,
+    VisibleProjectile,
     VisiblePickup,
+    KillEvent,
     AgentScore,
 )
 
@@ -32,25 +32,25 @@ from .client import (
     make_env,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = [
     # Version
     "__version__",
     # Enums
-    "ActionType",
-    "Direction",
     "WeaponType",
-    "TerrainType",
-    "PickupType",
+    "WEAPON_NAMES",
     # Core types
+    "TeeInput",
     "TeeAction",
     "TeeObservation",
     "TeeState",
     "StepResult",
     "GameConfig",
     # Supporting types
-    "VisibleEnemy",
+    "VisiblePlayer",
+    "VisibleProjectile",
     "VisiblePickup",
+    "KillEvent",
     "AgentScore",
     # Client
     "TeeEnv",

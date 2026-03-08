@@ -5,7 +5,6 @@ Client implementation for connecting to a TeeUnit server.
 """
 
 import asyncio
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Dict, Optional, Union
 
@@ -22,7 +21,7 @@ except ImportError:
 from .models import (
     GameConfig,
     StepResult,
-    TeeAction,
+    TeeInput,
     TeeObservation,
     TeeState,
 )
@@ -42,12 +41,12 @@ class TeeEnv:
     Example (async):
         async with TeeEnv(base_url="http://localhost:8000") as env:
             result = await env.reset()
-            result = await env.step(TeeAction(...))
+            result = await env.step(0, TeeInput.move_right())
     
     Example (sync):
         with TeeEnv(base_url="http://localhost:8000").sync() as env:
             result = env.reset()
-            result = env.step(TeeAction(...))
+            result = env.step(0, TeeInput.move_right())
     """
     
     def __init__(self, base_url: str = "http://localhost:8000"):
@@ -59,7 +58,6 @@ class TeeEnv:
         """
         self.base_url = base_url.rstrip("/")
         self._client: Optional[httpx.AsyncClient] = None
-        self._ws = None
     
     async def __aenter__(self):
         """Async context manager entry."""
@@ -102,12 +100,13 @@ class TeeEnv:
         data = response.json()
         return StepResult.from_dict(data)
     
-    async def step(self, action: TeeAction) -> StepResult:
+    async def step(self, agent_id: int, action: TeeInput) -> StepResult:
         """
-        Execute an action.
+        Execute an action for a single agent.
         
         Args:
-            action: The action to execute
+            agent_id: Which agent is acting
+            action: The TeeInput to execute
         
         Returns:
             StepResult with new observation
@@ -116,24 +115,20 @@ class TeeEnv:
             raise TeeEnvError("Client not connected. Use 'async with' context manager.")
         
         response = await self._client.post("/step", json={
-            "agent_id": action.agent_id,
-            "action_type": action.action_type,
-            "direction": action.direction,
-            "target_x": action.target_x,
-            "target_y": action.target_y,
-            "weapon": action.weapon,
+            "agent_id": agent_id,
+            **action.to_dict(),
         })
         response.raise_for_status()
         
         data = response.json()
         return StepResult.from_dict(data)
     
-    async def step_all(self, actions: Dict[int, TeeAction]) -> Dict[int, StepResult]:
+    async def step_all(self, actions: Dict[int, TeeInput]) -> Dict[int, StepResult]:
         """
         Execute actions for all agents simultaneously.
         
         Args:
-            actions: Dict mapping agent_id to action
+            actions: Dict mapping agent_id to TeeInput
         
         Returns:
             Dict mapping agent_id to StepResult
@@ -190,21 +185,6 @@ class TeeEnv:
         data = response.json()
         return TeeObservation.from_dict(data)
     
-    async def get_arena(self) -> Dict:
-        """
-        Get ASCII map of the arena.
-        
-        Returns:
-            Dict with map string and metadata
-        """
-        if self._client is None:
-            raise TeeEnvError("Client not connected. Use 'async with' context manager.")
-        
-        response = await self._client.get("/arena")
-        response.raise_for_status()
-        
-        return response.json()
-    
     async def health(self) -> Dict:
         """
         Check server health.
@@ -230,7 +210,7 @@ class SyncTeeEnv:
     Example:
         with TeeEnv(base_url="http://localhost:8000").sync() as env:
             result = env.reset()
-            result = env.step(TeeAction(...))
+            result = env.step(0, TeeInput.move_right())
     """
     
     def __init__(self, async_env: TeeEnv):
@@ -269,11 +249,11 @@ class SyncTeeEnv:
         """Reset the environment."""
         return self._loop.run_until_complete(self._async_env.reset(config))
     
-    def step(self, action: TeeAction) -> StepResult:
+    def step(self, agent_id: int, action: TeeInput) -> StepResult:
         """Execute an action."""
-        return self._loop.run_until_complete(self._async_env.step(action))
+        return self._loop.run_until_complete(self._async_env.step(agent_id, action))
     
-    def step_all(self, actions: Dict[int, TeeAction]) -> Dict[int, StepResult]:
+    def step_all(self, actions: Dict[int, TeeInput]) -> Dict[int, StepResult]:
         """Execute all actions simultaneously."""
         return self._loop.run_until_complete(self._async_env.step_all(actions))
     
@@ -285,10 +265,6 @@ class SyncTeeEnv:
         """Get agent observation."""
         return self._loop.run_until_complete(self._async_env.get_observation(agent_id))
     
-    def get_arena(self) -> Dict:
-        """Get arena map."""
-        return self._loop.run_until_complete(self._async_env.get_arena())
-    
     def health(self) -> Dict:
         """Check server health."""
         return self._loop.run_until_complete(self._async_env.health())
@@ -296,35 +272,45 @@ class SyncTeeEnv:
 
 class LocalTeeEnv:
     """
-    Local environment that doesn't require a server.
+    Local environment that doesn't require a separate server process.
     
-    Useful for testing and single-machine usage.
+    Connects directly to a Teeworlds server via BotManager.
+    Requires a Teeworlds server to be running.
     
     Example:
         env = LocalTeeEnv()
         result = env.reset()
-        result = env.step(TeeAction(...))
+        result = env.step(0, TeeInput.move_right())
     """
     
-    def __init__(self, config: Optional[GameConfig] = None):
+    def __init__(self, config: Optional[GameConfig] = None, auto_connect: bool = True):
         """
         Initialize local environment.
         
         Args:
             config: Game configuration
+            auto_connect: Whether to connect to Teeworlds server immediately
         """
         from .server.tee_environment import TeeEnvironment
-        self._env = TeeEnvironment(config)
+        self._env = TeeEnvironment(config, auto_connect=auto_connect)
+    
+    def connect(self, timeout: float = 10.0) -> bool:
+        """Connect to Teeworlds server."""
+        return self._env.connect(timeout)
+    
+    def disconnect(self):
+        """Disconnect from server."""
+        self._env.disconnect()
     
     def reset(self, config: Optional[Dict] = None) -> StepResult:
         """Reset the environment."""
         return self._env.reset(config)
     
-    def step(self, action: TeeAction) -> StepResult:
-        """Execute an action."""
-        return self._env.step(action)
+    def step(self, agent_id: int, action: TeeInput) -> StepResult:
+        """Execute an action for a single agent."""
+        return self._env.step(agent_id, action)
     
-    def step_all(self, actions: Dict[int, TeeAction]) -> Dict[int, StepResult]:
+    def step_all(self, actions: Dict[int, TeeInput]) -> Dict[int, StepResult]:
         """Execute all actions simultaneously."""
         return self._env.step_all(actions)
     
@@ -336,24 +322,34 @@ class LocalTeeEnv:
         """Get agent observation."""
         return self._env.get_observation(agent_id)
     
-    def get_arena_ascii(self) -> str:
-        """Get ASCII map of the arena."""
-        return self._env.arena.to_ascii(self._env.agents.get_agent_positions())
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit."""
+        self.disconnect()
+        return False
 
 
 # Convenience functions
-def make_env(base_url: Optional[str] = None, config: Optional[GameConfig] = None) -> Union[TeeEnv, LocalTeeEnv]:
+def make_env(
+    base_url: Optional[str] = None, 
+    config: Optional[GameConfig] = None,
+    auto_connect: bool = True,
+) -> Union[TeeEnv, LocalTeeEnv]:
     """
     Create a TeeUnit environment.
     
     Args:
         base_url: Server URL (if None, creates local environment)
         config: Game configuration (for local environment)
+        auto_connect: Whether to auto-connect to Teeworlds (local only)
     
     Returns:
-        TeeEnv or LocalTeeEnv
+        TeeEnv (for remote server) or LocalTeeEnv (for local/direct)
     """
     if base_url:
         return TeeEnv(base_url)
     else:
-        return LocalTeeEnv(config)
+        return LocalTeeEnv(config, auto_connect=auto_connect)

@@ -2,8 +2,10 @@
 TeeUnit FastAPI Server
 
 HTTP/WebSocket server implementing the OpenEnv API.
+Wraps a real Teeworlds server via BotManager.
 """
 
+import logging
 from contextlib import asynccontextmanager
 from typing import Dict, Optional
 
@@ -12,8 +14,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .tee_environment import TeeEnvironment
-from ..models import GameConfig, TeeAction
+from ..models import GameConfig, TeeInput
 
+logger = logging.getLogger(__name__)
 
 # Global environment instance
 env: Optional[TeeEnvironment] = None
@@ -23,15 +26,20 @@ env: Optional[TeeEnvironment] = None
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown."""
     global env
-    env = TeeEnvironment()
+    # Create environment but don't auto-connect (wait for reset)
+    env = TeeEnvironment(auto_connect=False)
+    logger.info("TeeUnit environment created")
     yield
-    # Cleanup if needed
+    # Cleanup
+    if env:
+        env.disconnect()
+        logger.info("TeeUnit environment disconnected")
 
 
 app = FastAPI(
     title="TeeUnit Environment",
-    description="Multi-agent arena environment for LLM training",
-    version="0.1.0",
+    description="Multi-agent arena environment wrapping real Teeworlds",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -54,16 +62,18 @@ class ResetRequest(BaseModel):
 class StepRequest(BaseModel):
     """Request body for step endpoint."""
     agent_id: int
-    action_type: str
-    direction: Optional[str] = None
-    target_x: Optional[int] = None
-    target_y: Optional[int] = None
-    weapon: Optional[str] = None
+    direction: int = 0
+    target_x: int = 0
+    target_y: int = 0
+    jump: bool = False
+    fire: bool = False
+    hook: bool = False
+    wanted_weapon: int = 0
 
 
 class StepAllRequest(BaseModel):
     """Request body for step_all endpoint."""
-    actions: Dict[int, Dict]  # agent_id -> action dict
+    actions: Dict[str, Dict]  # agent_id (str) -> action dict
 
 
 class ObservationRequest(BaseModel):
@@ -77,13 +87,13 @@ async def root():
     """Root endpoint with API info."""
     return {
         "name": "TeeUnit Environment",
-        "version": "0.1.0",
-        "description": "Multi-agent arena environment for LLM training",
+        "version": "0.2.0",
+        "description": "Multi-agent arena environment wrapping real Teeworlds",
         "endpoints": {
             "GET /health": "Health check",
-            "POST /reset": "Reset environment",
-            "POST /step": "Execute action",
-            "POST /step_all": "Execute all actions simultaneously",
+            "POST /reset": "Reset environment (connects to Teeworlds server)",
+            "POST /step": "Execute action for one agent",
+            "POST /step_all": "Execute actions for all agents simultaneously",
             "GET /state": "Get episode state",
             "POST /observation": "Get agent observation",
         },
@@ -93,7 +103,14 @@ async def root():
 @app.get("/health")
 async def health():
     """Health check endpoint."""
-    return {"status": "healthy", "environment": "teeunit"}
+    global env
+    connected = env._connected if env else False
+    return {
+        "status": "healthy",
+        "environment": "teeunit",
+        "connected": connected,
+        "num_agents": env.config.num_agents if env else 0,
+    }
 
 
 @app.post("/reset")
@@ -101,11 +118,12 @@ async def reset(request: ResetRequest = None):
     """
     Reset the environment to start a new match.
     
+    Connects to Teeworlds server if not already connected.
     Returns initial observation for agent 0.
     """
     global env
     if env is None:
-        env = TeeEnvironment()
+        env = TeeEnvironment(auto_connect=False)
     
     config = request.config if request else None
     result = env.reset(config)
@@ -121,27 +139,25 @@ async def reset(request: ResetRequest = None):
 @app.post("/step")
 async def step(request: StepRequest):
     """
-    Execute an action for an agent.
+    Execute an action for a single agent.
     
     Returns the agent's new observation and reward.
     """
     global env
-    if env is None:
+    if env is None or not env._connected:
         raise HTTPException(status_code=400, detail="Environment not initialized. Call /reset first.")
     
-    try:
-        action = TeeAction(
-            agent_id=request.agent_id,
-            action_type=request.action_type,
-            direction=request.direction,
-            target_x=request.target_x,
-            target_y=request.target_y,
-            weapon=request.weapon,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    action = TeeInput(
+        direction=request.direction,
+        target_x=request.target_x,
+        target_y=request.target_y,
+        jump=request.jump,
+        fire=request.fire,
+        hook=request.hook,
+        wanted_weapon=request.wanted_weapon,
+    )
     
-    result = env.step(action)
+    result = env.step(request.agent_id, action)
     
     return {
         "observation": result.observation.to_dict(),
@@ -159,20 +175,21 @@ async def step_all(request: StepAllRequest):
     Returns observations and rewards for all agents.
     """
     global env
-    if env is None:
+    if env is None or not env._connected:
         raise HTTPException(status_code=400, detail="Environment not initialized. Call /reset first.")
     
     try:
         actions = {}
         for agent_id_str, action_dict in request.actions.items():
             agent_id = int(agent_id_str)
-            actions[agent_id] = TeeAction(
-                agent_id=agent_id,
-                action_type=action_dict["action_type"],
-                direction=action_dict.get("direction"),
-                target_x=action_dict.get("target_x"),
-                target_y=action_dict.get("target_y"),
-                weapon=action_dict.get("weapon"),
+            actions[agent_id] = TeeInput(
+                direction=action_dict.get("direction", 0),
+                target_x=action_dict.get("target_x", 0),
+                target_y=action_dict.get("target_y", 0),
+                jump=action_dict.get("jump", False),
+                fire=action_dict.get("fire", False),
+                hook=action_dict.get("hook", False),
+                wanted_weapon=action_dict.get("wanted_weapon", 0),
             )
     except (ValueError, KeyError) as e:
         raise HTTPException(status_code=400, detail=f"Invalid action: {e}")
@@ -194,7 +211,7 @@ async def step_all(request: StepAllRequest):
 async def state():
     """Get current episode state."""
     global env
-    if env is None:
+    if env is None or not env._connected:
         raise HTTPException(status_code=400, detail="Environment not initialized. Call /reset first.")
     
     return env.state().to_dict()
@@ -204,29 +221,11 @@ async def state():
 async def observation(request: ObservationRequest):
     """Get observation for a specific agent."""
     global env
-    if env is None:
+    if env is None or not env._connected:
         raise HTTPException(status_code=400, detail="Environment not initialized. Call /reset first.")
     
     obs = env.get_observation(request.agent_id)
     return obs.to_dict()
-
-
-@app.get("/arena")
-async def arena():
-    """Get ASCII representation of the arena."""
-    global env
-    if env is None:
-        raise HTTPException(status_code=400, detail="Environment not initialized. Call /reset first.")
-    
-    agent_positions = env.agents.get_agent_positions()
-    ascii_map = env.arena.to_ascii(agent_positions)
-    
-    return {
-        "map": ascii_map,
-        "width": env.arena.width,
-        "height": env.arena.height,
-        "agents": {aid: list(pos) for aid, pos in agent_positions.items()},
-    }
 
 
 # WebSocket endpoint for real-time communication
@@ -237,7 +236,7 @@ async def websocket_endpoint(websocket: WebSocket):
     
     Protocol:
     - Send: {"type": "reset", "config": {...}} -> Reset environment
-    - Send: {"type": "step", "action": {...}} -> Execute action
+    - Send: {"type": "step", "agent_id": N, "action": {...}} -> Execute action
     - Send: {"type": "step_all", "actions": {...}} -> Execute all actions
     - Send: {"type": "state"} -> Get state
     - Send: {"type": "observation", "agent_id": N} -> Get observation
@@ -253,7 +252,7 @@ async def websocket_endpoint(websocket: WebSocket):
             
             if msg_type == "reset":
                 if env is None:
-                    env = TeeEnvironment()
+                    env = TeeEnvironment(auto_connect=False)
                 config = data.get("config")
                 result = env.reset(config)
                 await websocket.send_json({
@@ -268,45 +267,41 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
             
             elif msg_type == "step":
-                if env is None:
+                if env is None or not env._connected:
                     await websocket.send_json({
                         "type": "error",
-                        "message": "Environment not initialized",
+                        "message": "Environment not initialized. Call reset first.",
                     })
                     continue
                 
+                agent_id = data.get("agent_id", 0)
                 action_data = data.get("action", {})
-                try:
-                    action = TeeAction(
-                        agent_id=action_data.get("agent_id", 0),
-                        action_type=action_data.get("action_type", "wait"),
-                        direction=action_data.get("direction"),
-                        target_x=action_data.get("target_x"),
-                        target_y=action_data.get("target_y"),
-                        weapon=action_data.get("weapon"),
-                    )
-                    result = env.step(action)
-                    await websocket.send_json({
-                        "type": "result",
-                        "action": "step",
-                        "data": {
-                            "observation": result.observation.to_dict(),
-                            "reward": result.reward,
-                            "done": result.done,
-                            "info": result.info,
-                        },
-                    })
-                except ValueError as e:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": str(e),
-                    })
+                action = TeeInput(
+                    direction=action_data.get("direction", 0),
+                    target_x=action_data.get("target_x", 0),
+                    target_y=action_data.get("target_y", 0),
+                    jump=action_data.get("jump", False),
+                    fire=action_data.get("fire", False),
+                    hook=action_data.get("hook", False),
+                    wanted_weapon=action_data.get("wanted_weapon", 0),
+                )
+                result = env.step(agent_id, action)
+                await websocket.send_json({
+                    "type": "result",
+                    "action": "step",
+                    "data": {
+                        "observation": result.observation.to_dict(),
+                        "reward": result.reward,
+                        "done": result.done,
+                        "info": result.info,
+                    },
+                })
             
             elif msg_type == "step_all":
-                if env is None:
+                if env is None or not env._connected:
                     await websocket.send_json({
                         "type": "error",
-                        "message": "Environment not initialized",
+                        "message": "Environment not initialized. Call reset first.",
                     })
                     continue
                 
@@ -314,13 +309,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     actions = {}
                     for agent_id_str, action_dict in data.get("actions", {}).items():
                         agent_id = int(agent_id_str)
-                        actions[agent_id] = TeeAction(
-                            agent_id=agent_id,
-                            action_type=action_dict.get("action_type", "wait"),
-                            direction=action_dict.get("direction"),
-                            target_x=action_dict.get("target_x"),
-                            target_y=action_dict.get("target_y"),
-                            weapon=action_dict.get("weapon"),
+                        actions[agent_id] = TeeInput(
+                            direction=action_dict.get("direction", 0),
+                            target_x=action_dict.get("target_x", 0),
+                            target_y=action_dict.get("target_y", 0),
+                            jump=action_dict.get("jump", False),
+                            fire=action_dict.get("fire", False),
+                            hook=action_dict.get("hook", False),
+                            wanted_weapon=action_dict.get("wanted_weapon", 0),
                         )
                     
                     results = env.step_all(actions)
@@ -344,10 +340,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
             
             elif msg_type == "state":
-                if env is None:
+                if env is None or not env._connected:
                     await websocket.send_json({
                         "type": "error",
-                        "message": "Environment not initialized",
+                        "message": "Environment not initialized. Call reset first.",
                     })
                     continue
                 
@@ -358,10 +354,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
             
             elif msg_type == "observation":
-                if env is None:
+                if env is None or not env._connected:
                     await websocket.send_json({
                         "type": "error",
-                        "message": "Environment not initialized",
+                        "message": "Environment not initialized. Call reset first.",
                     })
                     continue
                 
