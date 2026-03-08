@@ -325,7 +325,7 @@ Reply with ONE action name only:"""
                     "num_predict": 10,  # Very short response
                 }
             },
-            timeout=8.0,  # Allow time for queued requests
+            timeout=15.0,  # Allow time for queued requests
         )
         
         if response.status_code == 200:
@@ -352,8 +352,14 @@ Reply with ONE action name only:"""
         return None
 
 
-def action_to_input(action: Dict[str, Any], current_input: PlayerInput, fire_count: int) -> Tuple[PlayerInput, int]:
-    """Convert action dict to PlayerInput."""
+def action_to_input(
+    action: Dict[str, Any], 
+    current_input: PlayerInput, 
+    fire_count: int,
+    game_state: Optional[GameState] = None,
+    bot_id: Optional[int] = None,
+) -> Tuple[PlayerInput, int]:
+    """Convert action dict to PlayerInput with auto-aim at nearest enemy."""
     tool = action["tool"]
     args = action.get("args", {})
     
@@ -384,6 +390,25 @@ def action_to_input(action: Dict[str, Any], current_input: PlayerInput, fire_cou
         inp.wanted_weapon = weapon
     elif tool == "hook":
         inp.hook = True
+    
+    # Auto-aim at nearest enemy for combat actions
+    if tool in ("shoot", "hook") and game_state is not None and bot_id is not None:
+        my_char = game_state.get_character(bot_id)
+        if my_char:
+            nearest_enemy = None
+            nearest_dist = float('inf')
+            for other_id, other_char in game_state.characters.items():
+                if other_id != bot_id:
+                    dx = other_char.x - my_char.x
+                    dy = other_char.y - my_char.y
+                    dist = (dx**2 + dy**2) ** 0.5
+                    if dist < nearest_dist:
+                        nearest_dist = dist
+                        nearest_enemy = other_char
+            if nearest_enemy:
+                # Set target relative to our position
+                inp.target_x = nearest_enemy.x - my_char.x
+                inp.target_y = nearest_enemy.y - my_char.y
     
     return inp, fire_count
 
@@ -504,7 +529,8 @@ Examples:
                         logger.info(f"  Bot{bot_id} (hp={hp}): '{action['name']}'")
                     
                     new_input, fire_counts[bot_id] = action_to_input(
-                        action, current_inputs[bot_id], fire_counts[bot_id]
+                        action, current_inputs[bot_id], fire_counts[bot_id],
+                        game_state, bot_id
                     )
                     current_inputs[bot_id] = new_input
                     inputs[bot_id] = new_input
