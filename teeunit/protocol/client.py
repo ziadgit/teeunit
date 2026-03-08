@@ -322,12 +322,15 @@ class TwClient:
         self._input = inp
         self._last_input_time = time.monotonic()
 
-        # Build input message
+        # Build input message (matches official Teeworlds client format)
         packer = Packer()
         header = (NETMSG_INPUT << 1) | 1  # sys=True
         packer.add_int(header)
-        packer.add_int(self._input_ack_tick)
-        packer.add_int(1)  # prediction margin
+        packer.add_int(self._input_ack_tick)  # Acknowledged game tick
+        
+        # Prediction tick = current tick + 1 (or 2 for prediction margin)
+        pred_tick = self.current_tick + 2 if self.current_tick > 0 else 1
+        packer.add_int(pred_tick)
 
         # Input size (10 ints)
         packer.add_int(10)
@@ -335,8 +338,12 @@ class TwClient:
         # Input data
         for val in inp.to_ints():
             packer.add_int(val)
+        
+        # Ping correction (0 for now - could be calculated from RTT)
+        packer.add_int(0)
 
-        self._send_chunks([(packer.data(), NET_CHUNKFLAG_VITAL)])
+        # Send as non-vital (input is time-sensitive, shouldn't be retransmitted)
+        self._send_chunks([(packer.data(), 0)])
 
     def send_fire(self, target_x: int = 0, target_y: int = 0):
         """Convenience method to fire weapon."""
