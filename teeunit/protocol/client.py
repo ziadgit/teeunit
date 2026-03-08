@@ -332,8 +332,8 @@ class TwClient:
         pred_tick = self.current_tick + 2 if self.current_tick > 0 else 1
         packer.add_int(pred_tick)
 
-        # Input size (10 ints)
-        packer.add_int(10)
+        # Input size in bytes (10 ints * 4 bytes)
+        packer.add_int(40)
 
         # Input data
         for val in inp.to_ints():
