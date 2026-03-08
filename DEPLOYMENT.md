@@ -44,7 +44,7 @@ npm install -g @northflank/cli
 northflank login
 
 # Set project context
-northflank context set --project hackathon
+northflank context use project --project hackathon
 ```
 
 ## Step 2: Create HuggingFace Token Secret
@@ -53,36 +53,30 @@ northflank context set --project hackathon
 2. Create a secret in Northflank:
 
 ```bash
-# Via CLI
-northflank secrets create \
-  --name hf-token \
-  --value "hf_YOUR_TOKEN_HERE"
+# Via CLI (create JSON file first)
+echo '{"HF_TOKEN": "hf_YOUR_TOKEN_HERE"}' > /tmp/hf-secret.json
+northflank create secret --project hackathon -f /tmp/hf-secret.json
+rm /tmp/hf-secret.json
 ```
 
 Or via Northflank UI:
 1. Go to Project > Secrets
 2. Create new secret named `hf-token`
-3. Set value to your HuggingFace token
+3. Add key `HF_TOKEN` with your token value
 
 ## Step 3: Deploy Environment Server (Internal)
 
 The environment server runs Teeworlds + FastAPI and is **internal only** (not publicly accessible).
 
 ```bash
-# Create the service
-northflank services create \
-  --name teeunit-env \
-  --type combined \
-  --dockerfile Dockerfile \
-  --branch main \
-  --internal \
-  --ports "7860:http"
+# Create the combined service from spec file
+northflank create service combined --project hackathon -f northflank/server-service.json
 ```
 
 Or using the spec file:
 
 ```bash
-northflank services create --file northflank/server-service.json
+northflank create service combined --project hackathon -f northflank/server-service.json
 ```
 
 ### Server Endpoints
@@ -100,31 +94,18 @@ northflank services create --file northflank/server-service.json
 ## Step 4: Deploy GPU Training Job
 
 ```bash
-# Create the GPU job
-northflank jobs create \
-  --name teeunit-train \
-  --type gpu \
-  --dockerfile Dockerfile.gpu \
-  --branch main \
-  --gpu nvidia-t4 \
-  --secret hf-token:HF_TOKEN \
-  --command "python -m teeunit.train train --steps 500000 --device cuda --save-path /app/models --single-agent --upload-hf --hf-repo ziadbc/teeunit-agent"
-```
-
-Or using the spec file:
-
-```bash
-northflank jobs create --file northflank/training-job.json
+# Create the GPU job from spec file
+northflank create job manual --project hackathon -f northflank/training-job.json
 ```
 
 ## Step 5: Run Training
 
 ```bash
 # Start the training job
-northflank jobs run teeunit-train
+northflank start job run --project hackathon --job teeunit-train
 
-# Monitor logs
-northflank jobs logs teeunit-train --follow
+# Monitor logs (via UI or API)
+# Go to: Northflank UI > Project > Jobs > teeunit-train > Logs
 ```
 
 Training will:
