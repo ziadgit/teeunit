@@ -26,17 +26,25 @@
     "runtime": {
       "command": [
         "python", "-m", "teeunit.train", "train",
-        "--steps", "1000000",
+        "--steps", "500000",
         "--device", "cuda",
         "--save-path", "/app/models",
-        "--single-agent"
+        "--single-agent",
+        "--upload-hf",
+        "--hf-repo", "ziadbc/teeunit-agent"
       ],
       "environment": {
         "CUDA_VISIBLE_DEVICES": "0",
         "PYTHONUNBUFFERED": "1",
         "TEEWORLDS_PORT": "8303",
         "PORT": "7860"
-      }
+      },
+      "secrets": [
+        {
+          "name": "hf-token",
+          "envVar": "HF_TOKEN"
+        }
+      ]
     },
     "volumes": [
       {

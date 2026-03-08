@@ -46,6 +46,15 @@ except ImportError:
     EvalCallback = None
     DummyVecEnv = None
 
+# Check for HuggingFace Hub
+try:
+    from huggingface_hub import HfApi, upload_folder
+    HAS_HF = True
+except ImportError:
+    HAS_HF = False
+    HfApi = None
+    upload_folder = None
+
 from .openenv_models import (
     TeeAction,
     TeeMultiAction,
@@ -66,6 +75,65 @@ def _check_sb3():
             "Stable-Baselines3 and Gymnasium required for training. "
             "Install with: pip install teeunit[rl]"
         )
+
+
+def _check_hf():
+    """Check if HuggingFace Hub is available and raise helpful error if not."""
+    if not HAS_HF:
+        raise ImportError(
+            "huggingface_hub required for uploading models. "
+            "Install with: pip install huggingface_hub"
+        )
+
+
+def upload_to_huggingface(
+    model_path: str,
+    repo_id: str,
+    commit_message: str = "Upload trained TeeUnit model",
+) -> str:
+    """
+    Upload trained model to HuggingFace Hub.
+    
+    Args:
+        model_path: Path to saved model directory
+        repo_id: HuggingFace repo ID (e.g., "ziadbc/teeunit-agent")
+        commit_message: Commit message for the upload
+    
+    Returns:
+        URL of the uploaded model
+    
+    Requires HF_TOKEN environment variable to be set.
+    """
+    _check_hf()
+    
+    token = os.environ.get("HF_TOKEN")
+    if not token:
+        raise ValueError(
+            "HF_TOKEN environment variable required for upload. "
+            "Get your token from https://huggingface.co/settings/tokens"
+        )
+    
+    api = HfApi(token=token)
+    
+    # Create repo if it doesn't exist
+    try:
+        api.create_repo(repo_id=repo_id, exist_ok=True, private=False)
+        logger.info(f"Created/verified repo: {repo_id}")
+    except Exception as e:
+        logger.warning(f"Could not create repo (may already exist): {e}")
+    
+    # Upload the model folder
+    logger.info(f"Uploading model from {model_path} to {repo_id}...")
+    
+    url = upload_folder(
+        folder_path=model_path,
+        repo_id=repo_id,
+        commit_message=commit_message,
+        token=token,
+    )
+    
+    logger.info(f"Model uploaded successfully: https://huggingface.co/{repo_id}")
+    return f"https://huggingface.co/{repo_id}"
 
 
 # =============================================================================
@@ -425,6 +493,8 @@ def train(
     remote_url: Optional[str] = None,
     single_agent_mode: bool = False,
     num_envs: int = 1,
+    upload_hf: bool = False,
+    hf_repo: str = "ziadbc/teeunit-agent",
     **kwargs,
 ):
     """
@@ -448,6 +518,8 @@ def train(
         remote_url: URL for remote training
         single_agent_mode: Train single agent
         num_envs: Number of parallel environments
+        upload_hf: Whether to upload model to HuggingFace Hub after training
+        hf_repo: HuggingFace repo ID for upload
     
     Returns:
         Trained PPO model
@@ -521,6 +593,19 @@ def train(
     final_path = os.path.join(save_path, "final_model")
     model.save(final_path)
     logger.info(f"Training complete! Model saved to {final_path}")
+    
+    # Upload to HuggingFace Hub if requested
+    if upload_hf:
+        try:
+            url = upload_to_huggingface(
+                model_path=save_path,
+                repo_id=hf_repo,
+                commit_message=f"Training complete: {total_timesteps} steps",
+            )
+            logger.info(f"Model uploaded to HuggingFace: {url}")
+        except Exception as e:
+            logger.error(f"Failed to upload to HuggingFace: {e}")
+            raise
     
     return model
 
@@ -649,6 +734,14 @@ def main():
         "--num-envs", type=int, default=1,
         help="Number of parallel environments"
     )
+    train_parser.add_argument(
+        "--upload-hf", action="store_true",
+        help="Upload model to HuggingFace Hub after training"
+    )
+    train_parser.add_argument(
+        "--hf-repo", type=str, default="ziadbc/teeunit-agent",
+        help="HuggingFace repo ID for upload"
+    )
     
     # Evaluate command
     eval_parser = subparsers.add_parser("eval", help="Evaluate a trained model")
@@ -677,6 +770,8 @@ def main():
             remote_url=args.remote,
             single_agent_mode=args.single_agent,
             num_envs=args.num_envs,
+            upload_hf=args.upload_hf,
+            hf_repo=args.hf_repo,
         )
     elif args.command == "eval":
         evaluate(
