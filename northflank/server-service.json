@@ -1,50 +1,55 @@
 {
-  "$schema": "https://api.northflank.com/v1/schemas/deployment",
-  "name": "TeeUnit Server",
-  "description": "TeeUnit environment server for remote RL training",
-  "spec": {
-    "type": "service",
-    "build": {
-      "dockerfile": "Dockerfile",
-      "context": "."
-    },
-    "resources": {
-      "cpu": {
-        "cores": 2
-      },
-      "memory": {
-        "megabytes": 4096
+  "name": "TeeUnit Environment",
+  "description": "TeeUnit environment server for RL training",
+  "billing": {
+    "deploymentPlan": "nf-gpu-hack-4-16"
+  },
+  "vcsData": {
+    "projectUrl": "https://github.com/ziadgit/teeunit",
+    "projectType": "github",
+    "projectBranch": "main"
+  },
+  "buildSettings": {
+    "dockerfile": {
+      "buildEngine": "kaniko",
+      "dockerFilePath": "/Dockerfile",
+      "dockerWorkDir": "/"
+    }
+  },
+  "deployment": {
+    "instances": 1,
+    "storage": {
+      "ephemeralStorage": {
+        "storageSize": 10240
       }
     },
-    "runtime": {
-      "environment": {
-        "PORT": "7860",
-        "TEEWORLDS_PORT": "8303",
-        "PYTHONUNBUFFERED": "1"
-      }
-    },
-    "ports": [
-      {
-        "name": "http",
-        "internalPort": 7860,
-        "public": true,
-        "protocol": "HTTP"
-      }
-    ],
-    "healthCheck": {
-      "enabled": true,
-      "path": "/health",
-      "port": 7860,
+    "docker": {
+      "configType": "default"
+    }
+  },
+  "runtimeEnvironment": {
+    "PORT": "7860",
+    "TEEWORLDS_PORT": "8303",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "ports": [
+    {
+      "name": "http",
+      "internalPort": 7860,
       "protocol": "HTTP",
-      "initialDelaySeconds": 15,
+      "public": false
+    }
+  ],
+  "healthChecks": [
+    {
+      "type": "livenessProbe",
+      "protocol": "HTTP",
+      "port": 7860,
+      "path": "/health",
+      "initialDelaySeconds": 30,
       "periodSeconds": 30,
       "timeoutSeconds": 10,
-      "successThreshold": 1,
       "failureThreshold": 3
-    },
-    "scaling": {
-      "minReplicas": 1,
-      "maxReplicas": 1
     }
-  }
+  ]
 }

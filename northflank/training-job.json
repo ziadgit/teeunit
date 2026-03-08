@@ -1,65 +1,44 @@
 {
-  "$schema": "https://api.northflank.com/v1/schemas/deployment",
   "name": "TeeUnit GPU Training",
   "description": "Self-play RL training for TeeUnit multi-agent arena",
-  "spec": {
-    "type": "gpu-job",
-    "gpu": {
-      "type": "nvidia-t4",
-      "count": 1
-    },
-    "build": {
-      "dockerfile": "Dockerfile.gpu",
-      "context": "."
-    },
-    "resources": {
-      "cpu": {
-        "cores": 4
-      },
-      "memory": {
-        "megabytes": 16384
-      },
-      "storage": {
-        "gigabytes": 50
-      }
-    },
-    "runtime": {
-      "command": [
-        "python", "-m", "teeunit.train", "train",
-        "--steps", "500000",
-        "--device", "cuda",
-        "--save-path", "/app/models",
-        "--single-agent",
-        "--upload-hf",
-        "--hf-repo", "ziadbc/teeunit-agent"
-      ],
-      "environment": {
-        "CUDA_VISIBLE_DEVICES": "0",
-        "PYTHONUNBUFFERED": "1",
-        "TEEWORLDS_PORT": "8303",
-        "PORT": "7860"
-      },
-      "secrets": [
-        {
-          "name": "hf-token",
-          "envVar": "HF_TOKEN"
-        }
-      ]
-    },
-    "volumes": [
-      {
-        "name": "models",
-        "mountPath": "/app/models",
-        "sizeGb": 10
-      },
-      {
-        "name": "logs",
-        "mountPath": "/app/logs",
-        "sizeGb": 5
-      }
-    ],
-    "healthCheck": {
-      "enabled": false
+  "billing": {
+    "deploymentPlan": "nf-gpu-hack-16-192-gpu"
+  },
+  "vcsData": {
+    "projectUrl": "https://github.com/ziadgit/teeunit",
+    "projectType": "github",
+    "projectBranch": "main"
+  },
+  "buildSettings": {
+    "dockerfile": {
+      "buildEngine": "kaniko",
+      "dockerFilePath": "/Dockerfile.gpu",
+      "dockerWorkDir": "/"
     }
-  }
+  },
+  "deployment": {
+    "storage": {
+      "ephemeralStorage": {
+        "storageSize": 51200
+      }
+    },
+    "docker": {
+      "configType": "customCommand",
+      "customCommand": "python -m teeunit.train train --steps 500000 --device cuda --save-path /app/models --single-agent --upload-hf --hf-repo ziadbc/teeunit-agent"
+    },
+    "gpu": {
+      "enabled": true,
+      "configuration": {
+        "gpuType": "h100-80",
+        "gpuCount": 1
+      }
+    }
+  },
+  "runtimeEnvironment": {
+    "CUDA_VISIBLE_DEVICES": "0",
+    "PYTHONUNBUFFERED": "1",
+    "TEEWORLDS_PORT": "8303",
+    "PORT": "7860"
+  },
+  "backoffLimit": 0
 }

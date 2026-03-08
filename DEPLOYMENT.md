@@ -44,7 +44,7 @@ npm install -g @northflank/cli
 northflank login
 
 # Set project context
-northflank context use project --project hackathon
+northflank context use project --id hackathon
 ```
 
 ## Step 2: Create HuggingFace Token Secret
