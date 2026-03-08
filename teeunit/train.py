@@ -142,15 +142,80 @@ def upload_to_huggingface(
 
 if HAS_SB3:
     
+    # Image observation dimensions for CNN policy
+    # We create a 4-channel 16x16 "image" from the state:
+    # Channel 0: Self state (health, armor, ammo, position encoded)
+    # Channel 1: Player positions (rendered as gaussians)
+    # Channel 2: Projectile positions
+    # Channel 3: Pickup positions
+    IMG_SIZE = 16
+    IMG_CHANNELS = 4
+    
+    def _tensor_to_image(tensor: np.ndarray) -> np.ndarray:
+        """
+        Convert 195-dim observation tensor to 4x16x16 image for CNN.
+        
+        This creates a spatial representation that CNN can process effectively,
+        utilizing GPU for convolution operations.
+        """
+        img = np.zeros((IMG_CHANNELS, IMG_SIZE, IMG_SIZE), dtype=np.float32)
+        
+        # Channel 0: Self state encoded as pattern
+        # 13 self features: x, y, vel_x, vel_y, health, armor, weapon, ammo, direction, grounded, alive, score, agent_id
+        self_state = tensor[:13]
+        # Normalize and tile into a pattern
+        health_norm = self_state[4] / 10.0  # health normalized
+        armor_norm = self_state[5] / 10.0   # armor normalized
+        # Fill top-left quadrant with self state pattern
+        img[0, :4, :4] = health_norm
+        img[0, :4, 4:8] = armor_norm
+        img[0, :4, 8:12] = self_state[6] / 5.0  # weapon
+        img[0, :4, 12:] = (self_state[8] + 1) / 2.0  # direction normalized
+        
+        # Channel 1: Visible players (70 features = 10 players x 7)
+        # Features per player: rel_x, rel_y, vel_x, vel_y, health, weapon, team
+        players = tensor[13:83].reshape(10, 7)
+        for i, player in enumerate(players):
+            if player[4] > 0:  # has health = visible
+                # Map relative position to image coords (assume +-500 range)
+                px = int(np.clip((player[0] / 1000.0 + 0.5) * IMG_SIZE, 0, IMG_SIZE-1))
+                py = int(np.clip((player[1] / 1000.0 + 0.5) * IMG_SIZE, 0, IMG_SIZE-1))
+                img[1, py, px] = player[4] / 10.0  # health as intensity
+        
+        # Channel 2: Projectiles (64 features = 16 projectiles x 4)
+        # Features: rel_x, rel_y, vel_x, vel_y
+        projectiles = tensor[83:147].reshape(16, 4)
+        for proj in projectiles:
+            if proj[0] != 0 or proj[1] != 0:  # has position
+                px = int(np.clip((proj[0] / 1000.0 + 0.5) * IMG_SIZE, 0, IMG_SIZE-1))
+                py = int(np.clip((proj[1] / 1000.0 + 0.5) * IMG_SIZE, 0, IMG_SIZE-1))
+                # Encode velocity as intensity
+                vel = np.sqrt(proj[2]**2 + proj[3]**2)
+                img[2, py, px] = min(1.0, vel / 500.0)
+        
+        # Channel 3: Pickups (48 features = 16 pickups x 3)
+        # Features: rel_x, rel_y, type
+        pickups = tensor[147:195].reshape(16, 3)
+        for pickup in pickups:
+            if pickup[0] != 0 or pickup[1] != 0:
+                px = int(np.clip((pickup[0] / 1000.0 + 0.5) * IMG_SIZE, 0, IMG_SIZE-1))
+                py = int(np.clip((pickup[1] / 1000.0 + 0.5) * IMG_SIZE, 0, IMG_SIZE-1))
+                img[3, py, px] = (pickup[2] + 1) / 5.0  # type as intensity
+        
+        return img
+    
     class TeeUnitGymEnv(gym.Env):
         """
         Gymnasium wrapper for TeeUnit environment.
         
         Designed for self-play training where all agents share the same policy.
-        Each step executes actions for all agents and returns aggregated observations.
+        Uses CNN-friendly image observations to leverage GPU acceleration.
         
-        The observation is a stack of all agents' observations.
-        The action is decoded into per-agent discrete actions.
+        The observation is converted to a 4x16x16 image format:
+        - Channel 0: Self state (health, armor, weapon, direction)
+        - Channel 1: Enemy player positions
+        - Channel 2: Projectile positions and velocities
+        - Channel 3: Pickup positions and types
         """
         
         metadata = {"render_modes": ["human"]}
@@ -162,6 +227,7 @@ if HAS_SB3:
             num_agents: int = 4,
             single_agent_mode: bool = False,
             agent_id: int = 0,
+            use_cnn: bool = True,
         ):
             """
             Initialize the Gymnasium wrapper.
@@ -172,6 +238,7 @@ if HAS_SB3:
                 num_agents: Number of agents in the environment
                 single_agent_mode: If True, only control one agent (others use random actions)
                 agent_id: Which agent to control in single-agent mode
+                use_cnn: If True, use image observations for CNN policy (GPU-accelerated)
             """
             super().__init__()
             
@@ -180,23 +247,43 @@ if HAS_SB3:
             self.num_agents = num_agents
             self.single_agent_mode = single_agent_mode
             self.agent_id = agent_id
+            self.use_cnn = use_cnn
             
-            # Observation space: stacked observations for all agents
-            obs_dim = 195  # Per-agent observation dimension
-            if single_agent_mode:
-                self.observation_space = spaces.Box(
-                    low=-np.inf,
-                    high=np.inf,
-                    shape=(obs_dim,),
-                    dtype=np.float32,
-                )
+            # Observation space
+            if use_cnn:
+                # Image observation for CNN: 4 channels x 16x16
+                if single_agent_mode:
+                    self.observation_space = spaces.Box(
+                        low=0.0,
+                        high=1.0,
+                        shape=(IMG_CHANNELS, IMG_SIZE, IMG_SIZE),
+                        dtype=np.float32,
+                    )
+                else:
+                    # Multi-agent: batch of images
+                    self.observation_space = spaces.Box(
+                        low=0.0,
+                        high=1.0,
+                        shape=(num_agents, IMG_CHANNELS, IMG_SIZE, IMG_SIZE),
+                        dtype=np.float32,
+                    )
             else:
-                self.observation_space = spaces.Box(
-                    low=-np.inf,
-                    high=np.inf,
-                    shape=(num_agents, obs_dim),
-                    dtype=np.float32,
-                )
+                # Original flat observation
+                obs_dim = 195
+                if single_agent_mode:
+                    self.observation_space = spaces.Box(
+                        low=-np.inf,
+                        high=np.inf,
+                        shape=(obs_dim,),
+                        dtype=np.float32,
+                    )
+                else:
+                    self.observation_space = spaces.Box(
+                        low=-np.inf,
+                        high=np.inf,
+                        shape=(num_agents, obs_dim),
+                        dtype=np.float32,
+                    )
             
             # Action space: discrete actions for all agents
             if single_agent_mode:
@@ -297,21 +384,33 @@ if HAS_SB3:
             self,
             observations: Dict[int, TeeObservation],
         ) -> np.ndarray:
-            """Convert observations dict to numpy array."""
+            """Convert observations dict to numpy array (flat or image format)."""
             if self.single_agent_mode:
                 obs = observations.get(self.agent_id)
                 if obs is None:
+                    if self.use_cnn:
+                        return np.zeros((IMG_CHANNELS, IMG_SIZE, IMG_SIZE), dtype=np.float32)
                     return np.zeros(195, dtype=np.float32)
-                return obs.to_tensor()
+                tensor = obs.to_tensor()
+                if self.use_cnn:
+                    return _tensor_to_image(tensor)
+                return tensor
             else:
                 # Stack all agent observations
                 obs_list = []
                 for agent_id in range(self.num_agents):
                     obs = observations.get(agent_id)
                     if obs is None:
-                        obs_list.append(np.zeros(195, dtype=np.float32))
+                        if self.use_cnn:
+                            obs_list.append(np.zeros((IMG_CHANNELS, IMG_SIZE, IMG_SIZE), dtype=np.float32))
+                        else:
+                            obs_list.append(np.zeros(195, dtype=np.float32))
                     else:
-                        obs_list.append(obs.to_tensor())
+                        tensor = obs.to_tensor()
+                        if self.use_cnn:
+                            obs_list.append(_tensor_to_image(tensor))
+                        else:
+                            obs_list.append(tensor)
                 return np.stack(obs_list, axis=0)
         
         def _action_to_multi_action(self, action: np.ndarray) -> TeeMultiAction:
@@ -421,6 +520,7 @@ def make_env(
     num_agents: int = 4,
     single_agent_mode: bool = False,
     agent_id: int = 0,
+    use_cnn: bool = True,
 ):
     """
     Create a TeeUnit Gymnasium environment.
@@ -432,6 +532,7 @@ def make_env(
         num_agents: Number of agents
         single_agent_mode: Control single agent only
         agent_id: Agent to control in single-agent mode
+        use_cnn: Use CNN-compatible image observations (GPU-accelerated)
     
     Returns:
         TeeUnitGymEnv instance
@@ -446,6 +547,7 @@ def make_env(
             num_agents=num_agents,
             single_agent_mode=single_agent_mode,
             agent_id=agent_id,
+            use_cnn=use_cnn,
         )
     else:
         # Local mode - run environment directly
@@ -468,6 +570,7 @@ def make_env(
             num_agents=num_agents,
             single_agent_mode=single_agent_mode,
             agent_id=agent_id,
+            use_cnn=use_cnn,
         )
 
 
@@ -495,6 +598,7 @@ def train(
     num_envs: int = 1,
     upload_hf: bool = False,
     hf_repo: str = "ziadbc/teeunit-agent",
+    use_cnn: bool = True,
     **kwargs,
 ):
     """
@@ -520,13 +624,15 @@ def train(
         num_envs: Number of parallel environments
         upload_hf: Whether to upload model to HuggingFace Hub after training
         hf_repo: HuggingFace repo ID for upload
+        use_cnn: Use CNN policy with image observations (GPU-accelerated)
     
     Returns:
         Trained PPO model
     """
     _check_sb3()
     
-    logger.info("Creating TeeUnit environment...")
+    policy_type = "CnnPolicy" if use_cnn else "MlpPolicy"
+    logger.info(f"Creating TeeUnit environment (CNN mode: {use_cnn})...")
     
     # Create environment(s)
     if num_envs > 1:
@@ -535,21 +641,24 @@ def train(
             return make_env(
                 remote_url=remote_url,
                 single_agent_mode=single_agent_mode,
+                use_cnn=use_cnn,
             )
         env = DummyVecEnv([make_single_env for _ in range(num_envs)])
     else:
         env = make_env(
             remote_url=remote_url,
             single_agent_mode=single_agent_mode,
+            use_cnn=use_cnn,
         )
     
     logger.info(f"Observation space: {env.observation_space}")
     logger.info(f"Action space: {env.action_space}")
+    logger.info(f"Policy: {policy_type}")
     logger.info(f"Device: {device}")
     
-    # Create PPO model
+    # Create PPO model with CNN or MLP policy
     model = PPO(
-        "MlpPolicy",
+        policy_type,
         env,
         learning_rate=learning_rate,
         n_steps=n_steps,
@@ -742,6 +851,14 @@ def main():
         "--hf-repo", type=str, default="ziadbc/teeunit-agent",
         help="HuggingFace repo ID for upload"
     )
+    train_parser.add_argument(
+        "--use-cnn", action="store_true", default=True,
+        help="Use CNN policy with image observations (GPU-accelerated, default: True)"
+    )
+    train_parser.add_argument(
+        "--no-cnn", action="store_true",
+        help="Use MLP policy instead of CNN"
+    )
     
     # Evaluate command
     eval_parser = subparsers.add_parser("eval", help="Evaluate a trained model")
@@ -761,6 +878,8 @@ def main():
     args = parser.parse_args()
     
     if args.command == "train":
+        # Determine CNN mode
+        use_cnn = args.use_cnn and not args.no_cnn
         train(
             total_timesteps=args.steps,
             learning_rate=args.lr,
@@ -772,6 +891,7 @@ def main():
             num_envs=args.num_envs,
             upload_hf=args.upload_hf,
             hf_repo=args.hf_repo,
+            use_cnn=use_cnn,
         )
     elif args.command == "eval":
         evaluate(
