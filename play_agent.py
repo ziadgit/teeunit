@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Play Trained Q-Learning Agent on Real Teeworlds Server
+Play Trained Q-Learning Agents on Real Teeworlds Server
 
-This script loads a trained Q-learning agent and plays it on a real
-Teeworlds server running in Docker. You can spectate by connecting
-to the same server with the Teeworlds client.
+This script loads a trained Q-learning agent and runs multiple bots
+on a real Teeworlds server running in Docker. You can spectate by
+connecting to the same server with the Teeworlds client.
 
 Usage:
-    python play_agent.py [--host HOST] [--port PORT] [--model MODEL_PATH]
+    python play_agent.py [--num-bots 4] [--host HOST] [--port PORT]
 
 Requirements:
     - Docker container 'teeunit' running on localhost:8303
@@ -21,7 +21,7 @@ import random
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple
 
 # Add project to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -164,19 +164,25 @@ def action_to_input(action: Dict[str, Any], current_input: PlayerInput, fire_cou
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Play trained Q-learning agent on Teeworlds server")
+    parser = argparse.ArgumentParser(description="Play trained Q-learning agents on Teeworlds server")
     parser.add_argument("--host", default="127.0.0.1", help="Server host (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8303, help="Server port (default: 8303)")
     parser.add_argument("--model", default="/tmp/teeunit-agent/teeunit_qlearning_agent.json",
                         help="Path to trained model JSON")
+    parser.add_argument("--num-bots", type=int, default=4, help="Number of bots (1-8, default: 4)")
     parser.add_argument("--episodes", type=int, default=0, help="Number of episodes (0 = infinite)")
     parser.add_argument("--steps-per-episode", type=int, default=200, help="Steps per episode")
-    parser.add_argument("--epsilon", type=float, default=0.05, help="Exploration rate")
+    parser.add_argument("--epsilon", type=float, default=0.05, help="Base exploration rate")
+    parser.add_argument("--vary-epsilon", action="store_true", 
+                        help="Give each bot different epsilon (more diverse behavior)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
     args = parser.parse_args()
     
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
+    
+    # Validate num_bots
+    num_bots = max(1, min(8, args.num_bots))
     
     # Check model exists
     if not Path(args.model).exists():
@@ -185,28 +191,37 @@ def main():
         logger.info("  git clone https://huggingface.co/ziadbc/teeunit-agent /tmp/teeunit-agent")
         sys.exit(1)
     
-    # Load agent
+    # Load agent (shared Q-table for all bots)
     agent = QLearningAgent(args.model)
     
+    # Calculate epsilon for each bot
+    if args.vary_epsilon:
+        # Give each bot different exploration rates for diverse behavior
+        # Bot 0: most greedy, Bot N: most exploratory
+        epsilons = [args.epsilon + (i * 0.1) for i in range(num_bots)]
+        logger.info(f"Varying epsilon per bot: {[f'{e:.2f}' for e in epsilons]}")
+    else:
+        epsilons = [args.epsilon] * num_bots
+    
     # Create bot manager
-    logger.info(f"Connecting to Teeworlds server at {args.host}:{args.port}...")
+    logger.info(f"Connecting {num_bots} bots to Teeworlds server at {args.host}:{args.port}...")
     manager = BotManager(
         host=args.host,
         port=args.port,
-        num_bots=1,
+        num_bots=num_bots,
         ticks_per_step=10,  # 200ms per step
-        bot_name_prefix="QAgent",
+        bot_name_prefix="QBot",
     )
     
     try:
         # Connect
-        if not manager.connect(timeout=10.0):
-            logger.error("Failed to connect to server!")
+        if not manager.connect(timeout=15.0):
+            logger.error("Failed to connect all bots to server!")
             logger.info("Make sure the Docker container is running:")
             logger.info("  docker ps | grep teeunit")
             sys.exit(1)
         
-        logger.info("Connected! Agent is now playing.")
+        logger.info(f"Connected! {num_bots} agents are now playing.")
         logger.info("")
         logger.info("=" * 60)
         logger.info("To spectate, open Teeworlds client and connect to:")
@@ -214,46 +229,67 @@ def main():
         logger.info("=" * 60)
         logger.info("")
         
+        # Per-bot state tracking
+        current_inputs: Dict[int, PlayerInput] = {i: PlayerInput() for i in range(num_bots)}
+        fire_counts: Dict[int, int] = {i: 0 for i in range(num_bots)}
+        
         # Game loop
         episode = 0
         total_steps = 0
-        current_input = PlayerInput()
-        fire_count = 0
         
         while True:
             episode += 1
-            episode_reward = 0.0
             episode_steps = 0
+            kills_this_episode: Dict[int, int] = {i: 0 for i in range(num_bots)}
             
             logger.info(f"Episode {episode} starting...")
             
             for step in range(args.steps_per_episode):
-                # Get current state
+                # Get current game state
                 game_state = manager.game_state
                 
-                # Discretize state
-                state = agent.discretize_state(game_state, bot_id=0)
+                # Each bot selects its action independently
+                inputs: Dict[int, PlayerInput] = {}
+                actions: Dict[int, Dict[str, Any]] = {}
                 
-                # Select action
-                action = agent.select_action(state, epsilon=args.epsilon)
+                for bot_id in range(num_bots):
+                    # Discretize state from this bot's perspective
+                    state = agent.discretize_state(game_state, bot_id=bot_id)
+                    
+                    # Select action with this bot's epsilon
+                    action = agent.select_action(state, epsilon=epsilons[bot_id])
+                    actions[bot_id] = action
+                    
+                    # Convert to input
+                    new_input, fire_counts[bot_id] = action_to_input(
+                        action, current_inputs[bot_id], fire_counts[bot_id]
+                    )
+                    current_inputs[bot_id] = new_input
+                    inputs[bot_id] = new_input
                 
-                # Convert to input
-                current_input, fire_count = action_to_input(action, current_input, fire_count)
-                
-                # Execute step
-                inputs = {0: current_input}
+                # Execute step for all bots
                 new_state = manager.step(inputs)
+                
+                # Track kills
+                for event in new_state.kill_events:
+                    if event.killer_id in kills_this_episode:
+                        kills_this_episode[event.killer_id] += 1
                 
                 # Log periodically
                 if step % 50 == 0:
-                    char = new_state.get_character(0)
-                    if char:
-                        logger.info(f"  Step {step}: pos=({char.x}, {char.y}), hp={char.health}, action={action['tool']}")
+                    status_parts = []
+                    for bot_id in range(num_bots):
+                        char = new_state.get_character(bot_id)
+                        if char:
+                            status_parts.append(f"Bot{bot_id}:hp={char.health}")
+                    logger.info(f"  Step {step}: {', '.join(status_parts)}")
                 
                 episode_steps += 1
                 total_steps += 1
             
-            logger.info(f"Episode {episode} complete: {episode_steps} steps")
+            # Episode summary
+            kills_summary = ", ".join([f"Bot{i}:{k}" for i, k in kills_this_episode.items()])
+            logger.info(f"Episode {episode} complete: {episode_steps} steps, kills: {kills_summary}")
             
             # Check if we should stop
             if args.episodes > 0 and episode >= args.episodes:
