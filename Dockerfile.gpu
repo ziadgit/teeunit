@@ -1,0 +1,82 @@
+# TeeUnit GPU Training Dockerfile
+# For Northflank GPU deployment or any NVIDIA GPU environment
+#
+# Usage:
+#   docker build -f Dockerfile.gpu -t teeunit-gpu .
+#   docker run --gpus all -p 7860:7860 teeunit-gpu
+
+FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+
+# Install Python and system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-venv \
+    python3-pip \
+    curl \
+    ca-certificates \
+    supervisor \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
+
+WORKDIR /app
+
+# Download and extract Teeworlds 0.7.5 server
+ENV TEEWORLDS_VERSION=0.7.5
+RUN curl -fsSL "https://github.com/teeworlds/teeworlds/releases/download/${TEEWORLDS_VERSION}/teeworlds-${TEEWORLDS_VERSION}-linux_x86_64.tar.gz" \
+    | tar xz -C /opt \
+    && mv "/opt/teeworlds-${TEEWORLDS_VERSION}-linux_x86_64" /opt/teeworlds \
+    && chmod +x /opt/teeworlds/teeworlds_srv
+
+# Install PyTorch with CUDA support first (large download)
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu121
+
+# Install Python dependencies
+COPY teeunit/server/requirements.txt requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install RL training dependencies
+RUN pip install --no-cache-dir \
+    stable-baselines3>=2.0.0 \
+    gymnasium>=0.29.0 \
+    tensorboard>=2.14.0
+
+# Copy application code
+COPY teeunit/ /app/teeunit/
+COPY pyproject.toml /app/
+
+# Install the package
+RUN pip install -e .
+
+# Copy Teeworlds server configuration
+COPY teeunit/server/teeworlds.cfg /opt/teeworlds/teeworlds.cfg
+
+# Copy supervisor configuration
+COPY teeunit/server/supervisord.conf /etc/supervisor/conf.d/teeunit.conf
+
+# Copy entrypoint script
+COPY teeunit/server/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Create directories for models and logs
+RUN mkdir -p /app/models /app/logs
+
+# Environment variables
+ENV PORT=7860
+ENV TEEWORLDS_PORT=8303
+ENV CUDA_VISIBLE_DEVICES=0
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+# Expose ports
+EXPOSE 7860
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT}/health')" || exit 1
+
+# Default: Run server (training uses different entrypoint)
+ENTRYPOINT ["/entrypoint.sh"]
+
+# For training, override with:
+# docker run --gpus all teeunit-gpu python -m teeunit.train train --steps 1000000 --device cuda
