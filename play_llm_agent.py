@@ -417,8 +417,17 @@ def action_to_input(
                         nearest_enemy = other_char
             if nearest_enemy:
                 # Set target relative to our position
-                inp.target_x = nearest_enemy.x - my_char.x
-                inp.target_y = nearest_enemy.y - my_char.y
+                inp.target_x = int(nearest_enemy.x - my_char.x)
+                inp.target_y = int(nearest_enemy.y - my_char.y)
+            else:
+                # No enemy found - aim in movement direction
+                inp.target_x = 100 if inp.direction >= 0 else -100
+                inp.target_y = 0
+    
+    # Fallback: if shooting with zero target, aim right
+    if tool == "shoot" and inp.target_x == 0 and inp.target_y == 0:
+        inp.target_x = 100
+        inp.target_y = 0
     
     return inp, fire_count
 

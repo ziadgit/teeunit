@@ -314,6 +314,11 @@ class TwClient:
         if self.state != ConnectionState.ONLINE:
             return
 
+        # Debug log when fire counter changes
+        if inp.fire > 0 and inp.fire != getattr(self, '_last_fire', 0):
+            logger.info(f"FIRE! counter={inp.fire} weapon={inp.wanted_weapon} target=({inp.target_x}, {inp.target_y})")
+            self._last_fire = inp.fire
+
         self._input = inp
         self._last_input_time = time.monotonic()
 
