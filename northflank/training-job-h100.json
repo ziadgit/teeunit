@@ -20,7 +20,7 @@
     },
     "docker": {
       "configType": "customCommand",
-      "customCommand": "python3.11 -m teeunit.train train --steps 500000 --device cuda --save-path /app/models --single-agent --upload-hf --hf-repo ziadbc/teeunit-agent"
+      "customCommand": "python3.11 -m teeunit.train train --steps 500000 --device cuda --save-path /app/models --single-agent --upload-hf --hf-repo ziadbc/teeunit-agent --remote https://http--teeunit-environment--xlx8hmjwjtkp.code.run"
     },
     "gpu": {
       "enabled": true,

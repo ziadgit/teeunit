@@ -62,7 +62,7 @@ from .openenv_models import (
     RewardConfig,
 )
 from .openenv_environment import TeeEnvironment, TeeConfig
-from .openenv_client import TeeEnvClient
+from .openenv_client import create_client, SyncTeeEnv
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -158,7 +158,7 @@ if HAS_SB3:
         def __init__(
             self,
             env: Optional[TeeEnvironment] = None,
-            client: Optional[TeeEnvClient] = None,
+            client: Optional[SyncTeeEnv] = None,
             num_agents: int = 4,
             single_agent_mode: bool = False,
             agent_id: int = 0,
@@ -168,7 +168,7 @@ if HAS_SB3:
             
             Args:
                 env: Local TeeEnvironment (if running locally)
-                client: Remote TeeEnvClient (if connecting to server)
+                client: Remote SyncTeeEnv (if connecting to server)
                 num_agents: Number of agents in the environment
                 single_agent_mode: If True, only control one agent (others use random actions)
                 agent_id: Which agent to control in single-agent mode
@@ -440,7 +440,7 @@ def make_env(
     
     if remote_url:
         # Remote mode - connect to TeeUnit server
-        client = TeeEnvClient(remote_url)
+        client = create_client(remote_url)
         return TeeUnitGymEnv(
             client=client,
             num_agents=num_agents,
