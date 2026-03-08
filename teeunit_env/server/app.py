@@ -31,6 +31,37 @@ try:
     app = create_app(
         TeeEnvironment, CallToolAction, CallToolObservation, env_name="teeunit_env"
     )
+    
+    # Add a friendly root endpoint
+    @app.get("/")
+    async def root():
+        """Welcome page with API information."""
+        return {
+            "name": "TeeUnit Environment",
+            "description": "OpenEnv-compatible Teeworlds arena for LLM-based RL training",
+            "version": "0.1.0",
+            "status": "running",
+            "docs": "/docs",
+            "endpoints": {
+                "health": "GET /health - Health check",
+                "reset": "POST /reset - Reset environment",
+                "step": "POST /step - Execute action",
+                "state": "GET /state - Get current state",
+                "metadata": "GET /metadata - Environment info",
+                "schema": "GET /schema - Action/Observation schema",
+                "websocket": "WS /ws - Stateful WebSocket session (recommended for RL)",
+            },
+            "tools": ["move", "jump", "aim", "shoot", "hook", "get_status"],
+            "example": {
+                "websocket": "Connect to wss://ziadbc-teeunit-env.hf.space/ws for stateful sessions",
+                "reset": {"type": "reset", "data": {}},
+                "step": {
+                    "type": "step",
+                    "data": {"type": "call_tool", "tool_name": "get_status", "arguments": {}}
+                }
+            },
+            "github": "https://github.com/ziadgit/teeunit",
+        }
 
 except ImportError:
     # Fallback: Create a simple FastAPI app for development/testing
