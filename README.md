@@ -345,6 +345,14 @@ Based on protocol documentation and reference implementations.
 
 ---
 
+## Documentation
+
+- [OpenEnv Architecture](docs/openenv.md) - How TeeUnit integrates with OpenEnv and MCP for LLM training
+- [Deployment Guide](DEPLOYMENT.md) - Deploy to Northflank with GPU training
+- [Training Notebook](notebooks/teeunit_training.ipynb) - Fine-tune LLMs with Unsloth + GRPO
+
+---
+
 ## Contributing
 
 Contributions are welcome! Key areas:
