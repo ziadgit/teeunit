@@ -175,6 +175,9 @@ class TeeEnvironment(MCPEnvironment):
         # Real server connection (optional)
         self._bot_manager = None
         
+        # Store tool functions for direct synchronous access
+        self._tool_fns = {}
+        
         # Define MCP tools
         @mcp.tool
         def move(direction: str) -> str:
@@ -431,6 +434,16 @@ class TeeEnvironment(MCPEnvironment):
             
             return "\n".join(lines)
         
+        # Store tool functions for direct synchronous access (for Colab/notebooks)
+        self._tool_fns = {
+            "move": move,
+            "jump": jump,
+            "aim": aim,
+            "shoot": shoot,
+            "hook": hook,
+            "get_status": get_status,
+        }
+        
         # Store MCP reference and pass to base class
         self._mcp = mcp
         super().__init__(mcp)
@@ -680,3 +693,18 @@ class TeeEnvironment(MCPEnvironment):
     def state(self) -> State:
         """Get the current environment state."""
         return self._state
+    
+    def call_tool_sync(self, name: str, **kwargs) -> str:
+        """
+        Call a tool synchronously (for notebooks/Colab).
+        
+        Args:
+            name: Tool name (move, jump, aim, shoot, hook, get_status)
+            **kwargs: Arguments for the tool
+            
+        Returns:
+            Tool result as string
+        """
+        if name not in self._tool_fns:
+            return f"Unknown tool: {name}"
+        return self._tool_fns[name](**kwargs)
