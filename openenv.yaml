@@ -1,0 +1,104 @@
+# OpenEnv Manifest for TeeUnit
+# Multi-Agent Arena Environment for LLM RL Training
+
+name: teeunit
+version: "0.1.0"
+description: |
+  Turn-based multi-agent arena environment inspired by Teeworlds.
+  Designed for LLM reinforcement learning with partial observability,
+  weapon mechanics, and emergent strategic behavior.
+
+# Environment metadata
+environment:
+  type: multi-agent
+  agents: 4
+  max_steps: 100
+  observation_type: partial
+  action_space: discrete
+
+# Server configuration
+server:
+  entrypoint: teeunit.server.app:app
+  framework: fastapi
+  port: 7860
+  
+# Client configuration
+client:
+  module: teeunit.client
+  classes:
+    - TeeEnv        # Async client
+    - SyncTeeEnv    # Synchronous wrapper
+    - LocalTeeEnv   # In-process (no HTTP)
+
+# Deployment targets
+deployment:
+  docker:
+    dockerfile: Dockerfile
+    platforms:
+      - linux/amd64
+      - linux/arm64
+  
+  huggingface:
+    sdk: docker
+    app_port: 7860
+    
+  northflank:
+    type: deployment
+    ports:
+      - name: http
+        internalPort: 7860
+        public: true
+        protocol: HTTP
+
+# Game configuration defaults
+config:
+  grid_size: 20
+  max_turns: 100
+  max_kills: 10
+  vision_radius: 6
+  spawn_protection_turns: 3
+  
+  rewards:
+    kill: 10.0
+    death: -5.0
+    damage_dealt: 0.1
+    damage_per_point: true
+    
+  weapons:
+    pistol:
+      damage: 15
+      range: 8
+      ammo: infinite
+    shotgun:
+      damage: 30
+      range: 4
+      spread: 3
+    laser:
+      damage: 25
+      range: 12
+      piercing: true
+    hammer:
+      damage: 50
+      range: 1
+      knockback: true
+
+# API endpoints
+api:
+  http:
+    - POST /reset
+    - POST /step
+    - POST /step_all
+    - GET /state
+    - GET /health
+  websocket:
+    - /ws
+
+# Tags for discoverability
+tags:
+  - multi-agent
+  - arena
+  - combat
+  - partial-observability
+  - turn-based
+  - llm-training
+  - reinforcement-learning

@@ -1,0 +1,90 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "teeunit"
+version = "0.1.0"
+description = "Multi-agent arena environment for LLM reinforcement learning"
+readme = "README.md"
+license = {text = "BSD-3-Clause"}
+authors = [
+    {name = "TeeUnit Contributors"}
+]
+keywords = [
+    "reinforcement-learning",
+    "multi-agent",
+    "openenv",
+    "llm",
+    "training",
+    "game",
+    "environment",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Games/Entertainment",
+]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+server = [
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "pydantic>=2.0.0",
+    "websockets>=12.0",
+]
+client = [
+    "httpx>=0.25.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "httpx>=0.25.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "pydantic>=2.0.0",
+    "websockets>=12.0",
+]
+all = [
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "pydantic>=2.0.0",
+    "websockets>=12.0",
+    "httpx>=0.25.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/ziadgit/teeunit"
+Documentation = "https://github.com/ziadgit/teeunit#readme"
+Repository = "https://github.com/ziadgit/teeunit.git"
+Issues = "https://github.com/ziadgit/teeunit/issues"
+
+[project.scripts]
+teeunit-server = "teeunit.server.app:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["teeunit*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["teeunit/tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]
