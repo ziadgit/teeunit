@@ -1,0 +1,47 @@
+[project]
+name = "teeunit-env"
+version = "0.1.0"
+description = "OpenEnv-compatible Teeworlds arena environment for LLM RL training"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "TeeUnit Team", email = "ziadbc@users.noreply.github.com" }
+]
+requires-python = ">=3.10"
+keywords = ["openenv", "teeworlds", "reinforcement-learning", "llm", "mcp"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "openenv-core>=0.2.1",
+    "fastmcp>=0.1.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "pydantic>=2.0.0",
+    "websockets>=11.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "httpx>=0.24",
+]
+
+[project.scripts]
+teeunit-server = "teeunit_env.server.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["teeunit_env"]

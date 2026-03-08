@@ -61,6 +61,10 @@ COPY teeunit/server/supervisord.conf /etc/supervisor/conf.d/teeunit.conf
 COPY teeunit/server/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# Copy local training script (starts server + training in same container)
+COPY scripts/train-local.sh /app/scripts/train-local.sh
+RUN chmod +x /app/scripts/train-local.sh
+
 # Create directories for models and logs
 RUN mkdir -p /app/models /app/logs
 
