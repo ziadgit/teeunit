@@ -20,6 +20,7 @@ from .const import (
     NET_CTRLMSG_ACCEPT,
     NET_CTRLMSG_CLOSE,
     NET_CTRLMSG_KEEPALIVE,
+    NET_CTRLMSG_TOKEN,
     NET_CHUNKFLAG_VITAL,
     NET_SEQUENCE_MASK,
     NETMSG_INFO,
@@ -41,7 +42,7 @@ from .const import (
     NETMSGTYPE_SV_KILLMSG,
     NETMSGTYPE_SV_CHAT,
     NET_VERSION_STR,
-    SECURITY_TOKEN_MAGIC,
+    NET_TOKEN_NONE,
     SERVER_TICK_SPEED,
 )
 from .huffman import Huffman
@@ -59,8 +60,9 @@ class ConnectionState(Enum):
     """Client connection state."""
 
     OFFLINE = auto()
-    CONNECTING = auto()
-    LOADING = auto()
+    TOKEN = auto()       # Waiting for token response
+    CONNECTING = auto()  # Sent CONNECT, waiting for ACCEPT
+    LOADING = auto()     # Loading map / sending info
     ONLINE = auto()
     ERROR = auto()
 
@@ -103,7 +105,8 @@ class TwClient:
 
     # Connection state
     state: ConnectionState = field(default=ConnectionState.OFFLINE)
-    token: bytes = field(default=b"\xff\xff\xff\xff")
+    token: int = field(default=NET_TOKEN_NONE)  # Our token
+    peer_token: int = field(default=NET_TOKEN_NONE)  # Server's token
     ack: int = 0
     sequence: int = 0
     client_id: int = -1
@@ -137,10 +140,31 @@ class TwClient:
     # Timing
     _last_recv_time: float = field(default=0, repr=False)
     _last_send_time: float = field(default=0, repr=False)
+    _last_input_time: float = field(default=0, repr=False)
+    
+    # Keepalive interval (send INPUT at least every 200ms to prevent timeout)
+    KEEPALIVE_INTERVAL: float = field(default=0.2, repr=False)
 
     def __post_init__(self):
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._socket.setblocking(False)
+        # Generate a random token for ourselves
+        self.token = random.randint(0, NET_TOKEN_NONE - 1)
+    
+    def _token_to_bytes(self, token: int) -> bytes:
+        """Convert token int to big-endian bytes."""
+        return bytes([
+            (token >> 24) & 0xFF,
+            (token >> 16) & 0xFF,
+            (token >> 8) & 0xFF,
+            token & 0xFF,
+        ])
+    
+    def _bytes_to_token(self, data: bytes) -> int:
+        """Convert big-endian bytes to token int."""
+        if len(data) < 4:
+            return NET_TOKEN_NONE
+        return (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3]
 
     @property
     def is_connected(self) -> bool:
@@ -158,14 +182,45 @@ class TwClient:
             try:
                 self._socket.sendto(data, self.address)
                 self._last_send_time = time.monotonic()
-                logger.debug(f"SEND [{len(data)}]: {data[:20].hex()}...")
+                logger.debug(f"SEND [{len(data)}]: {data.hex()}")
             except OSError as e:
                 logger.error(f"Send error: {e}")
 
     def _send_control(self, msg: int, extra: bytes = b""):
         """Send a control message."""
-        packet = pack_control_packet(msg, extra, self.token, self.ack)
+        # Use peer_token in header (or 0xffffffff if unknown)
+        token_bytes = self._token_to_bytes(self.peer_token)
+        packet = pack_control_packet(msg, extra, token_bytes, self.ack)
         self._send_raw(packet)
+    
+    def _send_control_with_token(self, msg: int):
+        """Send a control message that includes our token in the extra data.
+        
+        Used for TOKEN and CONNECT messages in Teeworlds 0.7.
+        The extra data contains our token (4 bytes) followed by 508 bytes padding.
+        """
+        # Our token goes in the extra data (big-endian, 4 bytes)
+        extra = self._token_to_bytes(self.token)
+        # Extended version sends 512 bytes of extra data for TOKEN requests
+        if msg == NET_CTRLMSG_TOKEN:
+            extra = extra + b'\x00' * 508
+        self._send_control(msg, extra)
+
+    def _send_ack_packet(self):
+        """Send an empty packet to acknowledge received vital chunks.
+        
+        This sends a packet with no chunks but with our current ack value,
+        letting the server know we've received all vital messages up to that sequence.
+        """
+        # Build an empty packet header with just the ack
+        # Format: flags(6) + ack_high(2), ack_low(8), num_chunks(8), token(32)
+        token_bytes = self._token_to_bytes(self.peer_token)
+        packet = bytearray()
+        packet.append(((0 << 2) & 0xFC) | ((self.ack >> 8) & 0x03))  # flags=0, ack high bits
+        packet.append(self.ack & 0xFF)  # ack low bits
+        packet.append(0)  # num_chunks = 0
+        packet.extend(token_bytes)
+        self._send_raw(bytes(packet))
 
     def _next_sequence(self) -> int:
         """Get next sequence number."""
@@ -174,10 +229,22 @@ class TwClient:
 
     def _send_chunks(self, chunks: List[Tuple[bytes, int]], compress: bool = True):
         """Send chunks in a packet."""
+        # For vital chunks, we need to set the sequence number
+        # Increment sequence for each vital chunk
+        processed_chunks = []
+        for chunk_data, chunk_flags in chunks:
+            if chunk_flags & NET_CHUNKFLAG_VITAL:
+                seq = self._next_sequence()
+                processed_chunks.append((chunk_data, chunk_flags, seq))
+            else:
+                processed_chunks.append((chunk_data, chunk_flags, -1))
+        
         packet = Packet()
-        data = packet.pack(
-            chunks,
-            self.token,
+        # Use peer_token (server's token) in the header
+        token_bytes = self._token_to_bytes(self.peer_token)
+        data = packet.pack_with_sequence(
+            processed_chunks,
+            token_bytes,
             self.ack,
             compress=compress,
             huffman=self._huffman,
@@ -215,13 +282,24 @@ class TwClient:
         self._send_chunks([(packer.data(), flags)])
 
     def connect(self):
-        """Initiate connection to server."""
+        """Initiate connection to server.
+        
+        Teeworlds 0.7 connection sequence:
+        1. Client sends TOKEN request with its own token
+        2. Server responds with TOKEN containing server's token
+        3. Client sends CONNECT with its token
+        4. Server responds with ACCEPT
+        5. Connection established, client sends INFO
+        """
         logger.info(f"Connecting to {self.host}:{self.port}...")
-        self.state = ConnectionState.CONNECTING
-        self.token = b"\xff\xff\xff\xff"
+        self.state = ConnectionState.TOKEN
+        self.peer_token = NET_TOKEN_NONE  # Unknown initially
+        
+        # Generate new token for ourselves
+        self.token = random.randint(0, NET_TOKEN_NONE - 1)
 
-        # Send connect with token request
-        self._send_control(NET_CTRLMSG_CONNECT, SECURITY_TOKEN_MAGIC)
+        # Send TOKEN request
+        self._send_control_with_token(NET_CTRLMSG_TOKEN)
 
     def disconnect(self, reason: str = ""):
         """Disconnect from server."""
@@ -237,6 +315,7 @@ class TwClient:
             return
 
         self._input = inp
+        self._last_input_time = time.monotonic()
 
         # Build input message
         packer = Packer()
@@ -272,6 +351,13 @@ class TwClient:
         if not self._socket:
             return False
 
+        # Send keepalive INPUT if we're online and haven't sent input recently
+        # This prevents the server from timing us out
+        if self.state == ConnectionState.ONLINE:
+            now = time.monotonic()
+            if now - self._last_input_time >= self.KEEPALIVE_INTERVAL:
+                self.send_input(self._input)
+
         try:
             data, addr = self._socket.recvfrom(2048)
         except BlockingIOError:
@@ -281,21 +367,36 @@ class TwClient:
             return False
 
         self._last_recv_time = time.monotonic()
-        logger.debug(f"RECV [{len(data)}]: {data[:20].hex()}...")
+        logger.debug(f"RECV [{len(data)}]: {data.hex()}")
 
         return self._handle_packet(data)
 
     def _handle_packet(self, data: bytes) -> bool:
         """Handle an incoming packet."""
-        if len(data) < 3:
+        if len(data) < 7:
             return False
 
         packet = Packet()
         if not packet.unpack(data, self._huffman):
             return False
+        
+        # Verify token matches our token (except during initial handshake)
+        received_token = self._bytes_to_token(packet.token)
+        if self.state not in (ConnectionState.OFFLINE, ConnectionState.TOKEN):
+            if received_token != self.token and received_token != NET_TOKEN_NONE:
+                logger.debug(f"Token mismatch: got {received_token:08x}, expected {self.token:08x}")
+                return False
 
-        # Update ack
-        # self.ack = packet.ack
+        # Update ack from the highest vital sequence we received
+        # This tells the server we've received all messages up to this sequence
+        if packet.max_recv_sequence >= 0:
+            old_ack = self.ack
+            self.ack = packet.max_recv_sequence
+            
+            # If ack changed, we need to send it back to the server
+            # The server needs ACK confirmation or it will timeout the client
+            if self.ack != old_ack and self.state == ConnectionState.ONLINE:
+                self._send_ack_packet()
 
         if packet.is_control:
             return self._handle_control(packet)
@@ -311,18 +412,26 @@ class TwClient:
         msg = packet.ctrl_msg
         data = packet.ctrl_data
 
-        if msg == NET_CTRLMSG_CONNECTACCEPT:
-            # Extract token from response
+        if msg == NET_CTRLMSG_TOKEN:
+            # Server is sending us its token
+            # The ctrl_data contains the server's token (first 4 bytes, big-endian)
             if len(data) >= 4:
-                self.token = bytes(data[:4])
-            logger.info(f"Connection accepted, token: {self.token.hex()}")
-
-            # Send accept
-            self._send_control(NET_CTRLMSG_ACCEPT)
-
+                self.peer_token = self._bytes_to_token(data[:4])
+                logger.info(f"Got server token: {self.peer_token:08x}")
+                
+                if self.state == ConnectionState.TOKEN:
+                    # Move to CONNECTING state and send CONNECT
+                    self.state = ConnectionState.CONNECTING
+                    self._send_control_with_token(NET_CTRLMSG_CONNECT)
+            return True
+        
+        elif msg == NET_CTRLMSG_ACCEPT:
+            # Connection accepted!
+            logger.info("Connection accepted!")
+            
             # Send client info
             self._send_client_info()
-
+            
             self.state = ConnectionState.LOADING
             return True
 
@@ -344,11 +453,16 @@ class TwClient:
     def _send_client_info(self):
         """Send client version and info."""
         # Send NETMSG_INFO
-        self._send_msg(
-            NETMSG_INFO,
-            sys=True,
-            strings=[NET_VERSION_STR, ""],  # version, password
-        )
+        # TW 0.7 format: version_string, password_string, client_version_int
+        # Need to construct manually since _send_msg puts ints before strings
+        packer = Packer()
+        header = (NETMSG_INFO << 1) | 1  # msg_id=1, sys=True
+        packer.add_int(header)
+        packer.add_string(NET_VERSION_STR)  # version
+        packer.add_string("")  # password
+        packer.add_int(0x0705)  # client version (0.7.5)
+        
+        self._send_chunks([(packer.data(), NET_CHUNKFLAG_VITAL)])
 
     def _handle_chunk(self, chunk: Chunk):
         """Handle a message chunk."""
@@ -517,7 +631,7 @@ class AsyncTwClient(TwClient):
         self.connect()
 
         start = time.monotonic()
-        while self.state == ConnectionState.CONNECTING:
+        while self.state in (ConnectionState.TOKEN, ConnectionState.CONNECTING):
             if time.monotonic() - start > timeout:
                 raise TimeoutError("Connection timeout")
             self.pump()

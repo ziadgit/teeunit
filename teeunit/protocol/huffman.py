@@ -1,32 +1,29 @@
 """
 Teeworlds Huffman Compression
 
-Implementation of the Huffman coding used in Teeworlds network protocol.
-Based on the frequency table from the Teeworlds source code.
+Implementation of the Huffman coding used in Teeworlds 0.7 network protocol.
+Based on the exact algorithm from huffman.cpp in Teeworlds source.
 """
 
 from typing import List, Optional
 
-# Huffman frequency table from Teeworlds source
+# Huffman frequency table from Teeworlds 0.7.5 source (huffman.cpp gs_aFreqTable)
+# This must match EXACTLY or decompression will fail
 # fmt: off
 HUFFMAN_FREQ_TABLE = [
-    1 << 30, 4545, 2657, 431, 1950, 919, 444, 482, 2244, 617, 838, 542, 715, 1814, 304, 240,
-    754, 212, 647, 186, 283, 131, 146, 166, 543, 164, 167, 104, 117, 178, 135, 131,
-    172, 139, 103, 131, 155, 151, 205, 218, 152, 140, 103, 186, 230, 82, 134, 134,
-    192, 129, 120, 131, 145, 163, 127, 131, 157, 136, 116, 171, 147, 153, 141, 205,
-    180, 149, 177, 144, 199, 165, 202, 155, 138, 135, 105, 172, 163, 143, 196, 152,
-    197, 134, 166, 173, 144, 147, 147, 135, 145, 163, 179, 167, 144, 164, 150, 209,
-    125, 114, 153, 153, 105, 114, 173, 143, 135, 115, 137, 159, 166, 132, 122, 149,
-    175, 168, 143, 144, 170, 169, 131, 132, 146, 141, 174, 143, 197, 158, 195, 154,
-    163, 161, 193, 152, 191, 116, 186, 143, 143, 141, 161, 131, 134, 144, 186, 152,
-    166, 132, 169, 157, 139, 139, 148, 144, 205, 132, 199, 151, 136, 133, 171, 175,
-    153, 161, 141, 193, 166, 162, 153, 143, 128, 132, 159, 150, 153, 140, 190, 139,
-    179, 166, 172, 139, 189, 143, 156, 167, 147, 128, 138, 141, 173, 117, 132, 147,
-    157, 165, 137, 186, 132, 193, 159, 146, 205, 139, 157, 138, 145, 177, 169, 157,
-    151, 142, 167, 139, 152, 144, 176, 174, 125, 159, 123, 155, 199, 139, 175, 199,
-    133, 152, 185, 183, 128, 117, 204, 134, 161, 135, 174, 155, 173, 127, 157, 160,
-    113, 185, 151, 212, 219, 136, 108, 172, 200, 182, 151, 154, 132, 194, 123, 155,
-    1 << 30,  # EOF symbol placeholder - will be used as frequency
+    1 << 30, 4545, 2657, 431, 1950, 919, 444, 482, 2244, 617, 838, 542, 715, 1814, 304, 240, 754, 212, 647, 186,
+    283, 131, 146, 166, 543, 164, 167, 136, 179, 859, 363, 113, 157, 154, 204, 108, 137, 180, 202, 176,
+    872, 404, 168, 134, 151, 111, 113, 109, 120, 126, 129, 100, 41, 20, 16, 22, 18, 18, 17, 19,
+    16, 37, 13, 21, 362, 166, 99, 78, 95, 88, 81, 70, 83, 284, 91, 187, 77, 68, 52, 68,
+    59, 66, 61, 638, 71, 157, 50, 46, 69, 43, 11, 24, 13, 19, 10, 12, 12, 20, 14, 9,
+    20, 20, 10, 10, 15, 15, 12, 12, 7, 19, 15, 14, 13, 18, 35, 19, 17, 14, 8, 5,
+    15, 17, 9, 15, 14, 18, 8, 10, 2173, 134, 157, 68, 188, 60, 170, 60, 194, 62, 175, 71,
+    148, 67, 167, 78, 211, 67, 156, 69, 1674, 90, 174, 53, 147, 89, 181, 51, 174, 63, 163, 80,
+    167, 94, 128, 122, 223, 153, 218, 77, 200, 110, 190, 73, 174, 69, 145, 66, 277, 143, 141, 60,
+    136, 53, 180, 57, 142, 57, 158, 61, 166, 112, 152, 92, 26, 22, 21, 28, 20, 26, 30, 21,
+    32, 27, 20, 17, 23, 21, 30, 22, 22, 21, 27, 25, 17, 27, 23, 18, 39, 26, 15, 21,
+    12, 18, 18, 27, 20, 18, 15, 19, 11, 17, 33, 12, 18, 15, 19, 18, 16, 26, 17, 18,
+    9, 10, 25, 22, 22, 17, 20, 16, 6, 16, 15, 20, 14, 18, 24, 335, 1517,
 ]
 # fmt: on
 
@@ -41,15 +38,31 @@ HUFFMAN_LUTMASK = HUFFMAN_LUTSIZE - 1
 class HuffmanNode:
     """Node in the Huffman tree."""
 
+    __slots__ = ['bits', 'num_bits', 'leafs', 'symbol']
+
     def __init__(self):
         self.bits: int = 0
         self.num_bits: int = 0
-        self.leafs: List[int] = [0, 0]  # [left, right] - indices or symbols
+        self.leafs: List[int] = [0xFFFF, 0xFFFF]  # Use 0xFFFF as sentinel like TW
         self.symbol: int = -1
 
 
+class HuffmanConstructNode:
+    """Temporary node for tree construction."""
+
+    __slots__ = ['node_id', 'frequency']
+
+    def __init__(self, node_id: int, frequency: int):
+        self.node_id = node_id
+        self.frequency = frequency
+
+
 class Huffman:
-    """Huffman encoder/decoder for Teeworlds protocol."""
+    """Huffman encoder/decoder for Teeworlds protocol.
+    
+    This implementation matches the exact algorithm from Teeworlds 0.7.5 huffman.cpp
+    to ensure bit-perfect compatibility.
+    """
 
     def __init__(self):
         self.nodes: List[HuffmanNode] = []
@@ -59,103 +72,117 @@ class Huffman:
 
         self._build_tree()
 
+    def _bubble_sort(self, nodes: List[HuffmanConstructNode]):
+        """Bubble sort by descending frequency (highest first).
+        
+        Must use bubble sort for deterministic results matching TW's implementation.
+        """
+        size = len(nodes)
+        changed = True
+        while changed:
+            changed = False
+            for i in range(size - 1):
+                # Sort descending (higher frequency first)
+                if nodes[i].frequency < nodes[i + 1].frequency:
+                    nodes[i], nodes[i + 1] = nodes[i + 1], nodes[i]
+                    changed = True
+            size -= 1
+
+    def _setbits_r(self, node: HuffmanNode, bits: int, depth: int):
+        """Recursively set bits for nodes (matches TW's Setbits_r)."""
+        if node.leafs[1] != 0xFFFF:
+            self._setbits_r(self.nodes[node.leafs[1]], bits | (1 << depth), depth + 1)
+        if node.leafs[0] != 0xFFFF:
+            self._setbits_r(self.nodes[node.leafs[0]], bits, depth + 1)
+
+        if node.num_bits:
+            node.bits = bits
+            node.num_bits = depth
+
     def _build_tree(self):
-        """Build the Huffman tree from frequency table."""
+        """Build the Huffman tree from frequency table.
+        
+        Matches TW's ConstructTree() exactly.
+        """
         # Initialize nodes
         self.nodes = [HuffmanNode() for _ in range(HUFFMAN_MAX_NODES)]
         self.num_nodes = HUFFMAN_MAX_SYMBOLS
 
-        # Initialize leaf nodes
+        # Create construction nodes list
+        nodes_left: List[HuffmanConstructNode] = []
+
+        # Add the symbols
         for i in range(HUFFMAN_MAX_SYMBOLS):
-            self.nodes[i].symbol = i
             self.nodes[i].num_bits = 0xFFFFFFFF
-            self.nodes[i].leafs = [-1, -1]
+            self.nodes[i].symbol = i
+            self.nodes[i].leafs = [0xFFFF, 0xFFFF]
 
-        # Build tree using frequency table
-        # Use node_indices for tree building
-        node_indices = list(range(HUFFMAN_MAX_SYMBOLS))
+            # EOF symbol gets frequency 1, others use table
+            if i == EOF_SYMBOL:
+                freq = 1
+            else:
+                freq = HUFFMAN_FREQ_TABLE[i]
 
-        while len(node_indices) > 1:
-            # Find two nodes with lowest frequency
-            # Sort by frequency (approximated by symbol index for initial nodes)
-            node_indices.sort(
-                key=lambda x: HUFFMAN_FREQ_TABLE[self.nodes[x].symbol]
-                if self.nodes[x].symbol >= 0 and self.nodes[x].symbol < len(HUFFMAN_FREQ_TABLE)
-                else self.nodes[x].num_bits
+            nodes_left.append(HuffmanConstructNode(i, freq))
+
+        # Construct the tree
+        while len(nodes_left) > 1:
+            # Bubble sort descending by frequency
+            self._bubble_sort(nodes_left)
+
+            # Combine two lowest frequency nodes (at the end after descending sort)
+            num_left = len(nodes_left)
+
+            self.nodes[self.num_nodes].num_bits = 0
+            self.nodes[self.num_nodes].leafs[0] = nodes_left[num_left - 1].node_id
+            self.nodes[self.num_nodes].leafs[1] = nodes_left[num_left - 2].node_id
+
+            # Update second-to-last node to be the new parent
+            nodes_left[num_left - 2].node_id = self.num_nodes
+            nodes_left[num_left - 2].frequency = (
+                nodes_left[num_left - 1].frequency + nodes_left[num_left - 2].frequency
             )
 
-            # Take two lowest
-            left_idx = node_indices.pop(0)
-            right_idx = node_indices.pop(0)
-
-            # Create parent node
-            parent_idx = self.num_nodes
             self.num_nodes += 1
-            parent = self.nodes[parent_idx]
-            parent.leafs = [left_idx, right_idx]
-            parent.symbol = -1
-
-            # Calculate combined frequency (using num_bits as temp storage)
-            left_freq = (
-                HUFFMAN_FREQ_TABLE[self.nodes[left_idx].symbol]
-                if self.nodes[left_idx].symbol >= 0
-                and self.nodes[left_idx].symbol < len(HUFFMAN_FREQ_TABLE)
-                else 1
-            )
-            right_freq = (
-                HUFFMAN_FREQ_TABLE[self.nodes[right_idx].symbol]
-                if self.nodes[right_idx].symbol >= 0
-                and self.nodes[right_idx].symbol < len(HUFFMAN_FREQ_TABLE)
-                else 1
-            )
-            parent.num_bits = left_freq + right_freq
-
-            node_indices.append(parent_idx)
+            nodes_left.pop()  # Remove last node
 
         # Set start node
-        if node_indices:
-            self.start_node = self.nodes[node_indices[0]]
+        self.start_node = self.nodes[self.num_nodes - 1]
 
-        # Generate codes by traversing tree
-        self._generate_codes(node_indices[0] if node_indices else 0, 0, 0)
+        # Build symbol bits
+        self._setbits_r(self.start_node, 0, 0)
 
         # Build decode LUT
         self._build_decode_lut()
 
-    def _generate_codes(self, node_idx: int, bits: int, depth: int):
-        """Generate Huffman codes by traversing the tree."""
-        node = self.nodes[node_idx]
-
-        if node.symbol >= 0:
-            # Leaf node
-            node.bits = bits
-            node.num_bits = depth
-            return
-
-        # Internal node - traverse children
-        if node.leafs[0] >= 0:
-            self._generate_codes(node.leafs[0], bits, depth + 1)
-        if node.leafs[1] >= 0:
-            self._generate_codes(node.leafs[1], bits | (1 << depth), depth + 1)
-
     def _build_decode_lut(self):
-        """Build lookup table for fast decoding."""
-        # Simple LUT - for each possible LUTBITS input, store the node
+        """Build lookup table for fast decoding.
+        
+        Matches TW's LUT building in Init().
+        """
         for i in range(HUFFMAN_LUTSIZE):
+            bits = i
             node = self.start_node
-            for bit in range(HUFFMAN_LUTBITS):
-                if node is None or node.symbol >= 0:
+
+            for k in range(HUFFMAN_LUTBITS):
+                node = self.nodes[node.leafs[bits & 1]]
+                bits >>= 1
+
+                if node is None:
                     break
-                direction = (i >> bit) & 1
-                next_idx = node.leafs[direction]
-                if next_idx >= 0:
-                    node = self.nodes[next_idx]
-                else:
+
+                if node.num_bits:
+                    self.decode_lut[i] = node
                     break
-            self.decode_lut[i] = node
+            else:
+                # Finished all bits without finding a leaf
+                self.decode_lut[i] = node
 
     def compress(self, data: bytes) -> bytes:
-        """Compress data using Huffman coding."""
+        """Compress data using Huffman coding.
+        
+        Matches TW's Compress() function.
+        """
         if not data:
             return b""
 
@@ -178,54 +205,85 @@ class Huffman:
         bits |= eof_node.bits << bitcount
         bitcount += eof_node.num_bits
 
-        # Flush remaining bits
-        while bitcount > 0:
+        while bitcount >= 8:
             result.append(bits & 0xFF)
             bits >>= 8
             bitcount -= 8
 
+        # Write out the last bits
+        if bitcount > 0:
+            result.append(bits & 0xFF)
+
         return bytes(result)
 
     def decompress(self, data: bytes) -> bytes:
-        """Decompress Huffman-encoded data."""
+        """Decompress Huffman-encoded data.
+        
+        Matches TW's Decompress() function exactly.
+        """
         if not data:
             return b""
 
         result = bytearray()
+        src_idx = 0
         bits = 0
         bitcount = 0
-        src_idx = 0
+
+        eof_node = self.nodes[EOF_SYMBOL]
 
         while True:
-            # Refill bits buffer
+            # {A} try to load a node now, this will reduce dependency at location {D}
+            node = None
+            if bitcount >= HUFFMAN_LUTBITS:
+                node = self.decode_lut[bits & HUFFMAN_LUTMASK]
+
+            # {B} fill with new bits
             while bitcount < 24 and src_idx < len(data):
                 bits |= data[src_idx] << bitcount
                 bitcount += 8
                 src_idx += 1
 
-            # Decode using tree traversal
-            node = self.start_node
-            while node and node.symbol < 0:
-                if bitcount <= 0:
-                    # Ran out of bits
-                    return bytes(result)
-                direction = bits & 1
-                bits >>= 1
-                bitcount -= 1
-                next_idx = node.leafs[direction]
-                if next_idx >= 0:
-                    node = self.nodes[next_idx]
-                else:
-                    break
+            # {C} load symbol now if we didn't earlier at location {A}
+            if node is None:
+                node = self.decode_lut[bits & HUFFMAN_LUTMASK]
 
             if node is None:
-                break
+                return bytes(result)  # Error
+
+            # {D} check if we hit a symbol already
+            if node.num_bits:
+                # Remove the bits for that symbol
+                bits >>= node.num_bits
+                bitcount -= node.num_bits
+            else:
+                # Remove the bits that the LUT checked up for us
+                bits >>= HUFFMAN_LUTBITS
+                bitcount -= HUFFMAN_LUTBITS
+
+                # Walk the tree bit by bit
+                while True:
+                    # Traverse tree
+                    if node.leafs[bits & 1] == 0xFFFF:
+                        return bytes(result)  # Error
+                    node = self.nodes[node.leafs[bits & 1]]
+
+                    # Remove bit
+                    bitcount -= 1
+                    bits >>= 1
+
+                    # Check if we hit a symbol
+                    if node.num_bits:
+                        break
+
+                    # No more bits, decoding error
+                    if bitcount == 0:
+                        return bytes(result)
 
             # Check for EOF
-            if node.symbol == EOF_SYMBOL:
+            if node is eof_node:
                 break
 
-            # Output symbol
+            # Output character
             if node.symbol >= 0 and node.symbol < 256:
                 result.append(node.symbol)
 

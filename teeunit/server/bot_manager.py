@@ -240,6 +240,15 @@ class BotManager:
                     # For now, we assume bot_id matches client_id
                 return True
             
+            # Check for errors
+            any_error = any(
+                bot.client.state == ConnectionState.ERROR
+                for bot in self.bots.values()
+            )
+            if any_error:
+                logger.warning("Bot connection error")
+                break
+            
             time.sleep(0.01)
         
         # Timeout - check which bots connected
@@ -283,6 +292,15 @@ class BotManager:
                 for bot in self.bots.values():
                     bot.connected = True
                 return True
+            
+            # Check for errors
+            any_error = any(
+                bot.client.state == ConnectionState.ERROR
+                for bot in self.bots.values()
+            )
+            if any_error:
+                logger.warning("Bot connection error (async)")
+                break
             
             await asyncio.sleep(0.01)
         

@@ -34,6 +34,9 @@ class Packet:
     # For control packets
     ctrl_msg: int = -1
     ctrl_data: bytes = field(default_factory=bytes)
+    
+    # Highest sequence number received (for ack tracking)
+    max_recv_sequence: int = -1
 
     @property
     def is_control(self) -> bool:
@@ -51,16 +54,28 @@ class Packet:
         return bool(self.flags & NET_PACKETFLAG_CONNLESS)
 
     def unpack(self, data: bytes, huffman: Huffman) -> bool:
-        """Unpack a packet from raw bytes."""
-        if len(data) < 3:
+        """Unpack a packet from raw bytes.
+        
+        Teeworlds 0.7 packet format (7 bytes header):
+        - byte 0: (flags << 2) | (ack >> 8)   -- FFFFFFaa
+        - byte 1: ack & 0xff                   -- aaaaaaaa  
+        - byte 2: num_chunks                   -- NNNNNNNN
+        - bytes 3-6: token (big-endian)        -- TTTTTTTT x4
+        - payload: control message or compressed chunks
+        """
+        if len(data) < 7:  # 3 header + 4 token minimum
             return False
 
-        # Parse header
-        self.flags = (data[0] >> 4) & 0x0F
-        self.ack = ((data[0] & 0x0F) << 8) | data[1]
+        # Parse header (3 bytes)
+        # Flags are in upper 6 bits, shifted left by 2
+        self.flags = (data[0] >> 2) & 0x3F
+        self.ack = ((data[0] & 0x03) << 8) | data[1]
         self.num_chunks = data[2]
+        
+        # Extract token (4 bytes after header, big-endian)
+        self.token = bytes(data[3:7])
 
-        payload = data[3:]
+        payload = data[7:]
 
         # Handle control packets
         if self.is_control:
@@ -78,17 +93,22 @@ class Packet:
         # Parse chunks
         self.chunks = []
         offset = 0
+        max_sequence = -1  # Track highest sequence received
 
         for _ in range(self.num_chunks):
             if offset >= len(payload):
                 break
 
             # Parse chunk header (2-3 bytes)
+            # Teeworlds format:
+            # byte 0: (flags << 6) | ((size >> 6) & 0x3F)
+            # byte 1: (size & 0x3F) [| ((seq >> 2) & 0xC0) if vital]
+            # byte 2: (seq & 0xFF) if vital
             if offset + 2 > len(payload):
                 break
 
             chunk_flags = (payload[offset] >> 6) & 0x03
-            chunk_size = ((payload[offset] & 0x3F) << 4) | (payload[offset + 1] & 0x0F)
+            chunk_size = ((payload[offset] & 0x3F) << 6) | (payload[offset + 1] & 0x3F)
             offset += 2
 
             # Vital chunks have sequence number
@@ -96,8 +116,11 @@ class Packet:
             if chunk_flags & NET_CHUNKFLAG_VITAL:
                 if offset >= len(payload):
                     break
-                chunk_sequence = ((payload[offset - 1] & 0xF0) << 2) | payload[offset]
+                chunk_sequence = ((payload[offset - 1] & 0xC0) << 2) | payload[offset]
                 offset += 1
+                # Track highest sequence for ack
+                if chunk_sequence > max_sequence:
+                    max_sequence = chunk_sequence
 
             # Extract chunk data
             if offset + chunk_size > len(payload):
@@ -127,6 +150,9 @@ class Packet:
                 data=unpacker.get_remaining(),
             )
             self.chunks.append(chunk)
+        
+        # Store max sequence for ack tracking
+        self.max_recv_sequence = max_sequence
 
         return True
 
@@ -138,7 +164,15 @@ class Packet:
         compress: bool = False,
         huffman: Huffman = None,
     ) -> bytes:
-        """Pack chunks into a packet."""
+        """Pack chunks into a packet.
+        
+        Teeworlds 0.7 packet format (7 bytes header):
+        - byte 0: (flags << 2) | (ack >> 8)   -- FFFFFFaa
+        - byte 1: ack & 0xff                   -- aaaaaaaa
+        - byte 2: num_chunks                   -- NNNNNNNN
+        - bytes 3-6: token (big-endian)        -- TTTTTTTT x4
+        - payload: chunks (optionally compressed)
+        """
         self.token = token
         self.ack = ack
         self.num_chunks = len(chunks)
@@ -149,16 +183,20 @@ class Packet:
         for chunk_data, chunk_flags in chunks:
             chunk_size = len(chunk_data)
 
-            # Build chunk header
+            # Build chunk header according to Teeworlds format:
+            # byte 0: (flags << 6) | ((size >> 6) & 0x3F)
+            # byte 1: (size & 0x3F) [| ((seq >> 2) & 0xC0) if vital]
+            # byte 2: (seq & 0xFF) if vital
             header = bytearray()
-            header.append(((chunk_flags & 0x03) << 6) | ((chunk_size >> 4) & 0x3F))
-            header.append(chunk_size & 0x0F)
-
-            # Add sequence for vital chunks
+            header.append(((chunk_flags & 0x03) << 6) | ((chunk_size >> 6) & 0x3F))
+            
             if chunk_flags & NET_CHUNKFLAG_VITAL:
+                # Use global sequence counter for vital chunks
                 seq = self.ack & NET_SEQUENCE_MASK
-                header[-1] |= (seq >> 2) & 0xF0
+                header.append((chunk_size & 0x3F) | ((seq >> 2) & 0xC0))
                 header.append(seq & 0xFF)
+            else:
+                header.append(chunk_size & 0x3F)
 
             payload.extend(header)
             payload.extend(chunk_data)
@@ -171,31 +209,111 @@ class Packet:
                 payload = bytearray(compressed)
                 self.flags |= NET_PACKETFLAG_COMPRESSION
 
-        # Build packet header
+        # Build packet header (7 bytes)
         packet = bytearray()
-        packet.append(((self.flags << 4) & 0xF0) | ((self.ack >> 8) & 0x0F))
+        # byte 0: (flags << 2) | (ack >> 8)
+        packet.append(((self.flags << 2) & 0xFC) | ((self.ack >> 8) & 0x03))
+        # byte 1: ack & 0xff
         packet.append(self.ack & 0xFF)
+        # byte 2: num_chunks
         packet.append(self.num_chunks)
 
-        packet.extend(payload)
+        # Token (4 bytes, big-endian) - use as-is since it's already bytes
         packet.extend(token)
+        
+        # Payload
+        packet.extend(payload)
+
+        return bytes(packet)
+    
+    def pack_with_sequence(
+        self,
+        chunks: List[Tuple[bytes, int, int]],  # List of (data, flags, sequence)
+        token: bytes,
+        ack: int = 0,
+        compress: bool = False,
+        huffman: Huffman = None,
+    ) -> bytes:
+        """Pack chunks into a packet with explicit sequence numbers.
+        
+        Teeworlds 0.7 packet format (7 bytes header):
+        - byte 0: (flags << 2) | (ack >> 8)   -- FFFFFFaa
+        - byte 1: ack & 0xff                   -- aaaaaaaa
+        - byte 2: num_chunks                   -- NNNNNNNN
+        - bytes 3-6: token (big-endian)        -- TTTTTTTT x4
+        - payload: chunks (optionally compressed)
+        """
+        self.token = token
+        self.ack = ack
+        self.num_chunks = len(chunks)
+
+        # Build payload from chunks
+        payload = bytearray()
+
+        for chunk_data, chunk_flags, chunk_seq in chunks:
+            chunk_size = len(chunk_data)
+
+            # Build chunk header
+            header = bytearray()
+            header.append(((chunk_flags & 0x03) << 6) | ((chunk_size >> 6) & 0x3F))
+            
+            if chunk_flags & NET_CHUNKFLAG_VITAL:
+                seq = chunk_seq & NET_SEQUENCE_MASK
+                header.append((chunk_size & 0x3F) | ((seq >> 2) & 0xC0))
+                header.append(seq & 0xFF)
+            else:
+                header.append(chunk_size & 0x3F)
+
+            payload.extend(header)
+            payload.extend(chunk_data)
+
+        # Compress if requested
+        self.flags = 0
+        if compress and huffman and payload:
+            compressed = huffman.compress(bytes(payload))
+            if len(compressed) < len(payload):
+                payload = bytearray(compressed)
+                self.flags |= NET_PACKETFLAG_COMPRESSION
+
+        # Build packet header (7 bytes)
+        packet = bytearray()
+        packet.append(((self.flags << 2) & 0xFC) | ((self.ack >> 8) & 0x03))
+        packet.append(self.ack & 0xFF)
+        packet.append(self.num_chunks)
+        packet.extend(token)
+        packet.extend(payload)
 
         return bytes(packet)
 
 
 def pack_control_packet(ctrl_msg: int, extra: bytes = b"", token: bytes = b"\xff\xff\xff\xff", ack: int = 0) -> bytes:
-    """Create a control packet."""
+    """Create a control packet for Teeworlds 0.7.
+    
+    Teeworlds 0.7 packet format (7 bytes header):
+    - byte 0: (flags << 2) | (ack >> 8)   -- FFFFFFaa (flags=0x01 for control)
+    - byte 1: ack & 0xff                   -- aaaaaaaa
+    - byte 2: num_chunks (0 for control)   -- NNNNNNNN
+    - bytes 3-6: token (big-endian)        -- TTTTTTTT x4
+    - payload: control message byte + extra data
+    """
     packet = bytearray()
 
-    # Header with control flag
-    flags = NET_PACKETFLAG_CONTROL
-    packet.append(((flags << 4) & 0xF0) | ((ack >> 8) & 0x0F))
+    # Header with control flag (3 bytes)
+    flags = NET_PACKETFLAG_CONTROL  # = 1
+    # byte 0: (flags << 2) | (ack >> 8)
+    packet.append(((flags << 2) & 0xFC) | ((ack >> 8) & 0x03))
+    # byte 1: ack & 0xff
     packet.append(ack & 0xFF)
-    packet.append(0)  # num_chunks = 0 for control
+    # byte 2: num_chunks = 0 for control
+    packet.append(0)
 
-    # Control message
-    packet.append(ctrl_msg)
-    packet.extend(extra)
+    # Token (4 bytes, big-endian) - already bytes
     packet.extend(token)
+    
+    # Control message (1 byte)
+    packet.append(ctrl_msg)
+    
+    # Extra data (e.g., MyToken for TOKEN/CONNECT messages)
+    packet.extend(extra)
 
     return bytes(packet)
