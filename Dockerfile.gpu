@@ -11,13 +11,15 @@ FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.11 \
     python3.11-venv \
+    python3.11-dev \
     python3-pip \
     curl \
     ca-certificates \
     supervisor \
     && rm -rf /var/lib/apt/lists/* \
     && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
-    && update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && python3.11 -m pip install --upgrade pip
 
 WORKDIR /app
 
@@ -29,14 +31,14 @@ RUN curl -fsSL "https://github.com/teeworlds/teeworlds/releases/download/${TEEWO
     && chmod +x /opt/teeworlds/teeworlds_srv
 
 # Install PyTorch with CUDA support first (large download)
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu121
+RUN python3.11 -m pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu121
 
 # Install Python dependencies
 COPY teeunit/server/requirements.txt requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python3.11 -m pip install --no-cache-dir -r requirements.txt
 
 # Install RL training dependencies
-RUN pip install --no-cache-dir \
+RUN python3.11 -m pip install --no-cache-dir \
     stable-baselines3>=2.0.0 \
     gymnasium>=0.29.0 \
     tensorboard>=2.14.0 \
@@ -46,8 +48,8 @@ RUN pip install --no-cache-dir \
 COPY teeunit/ /app/teeunit/
 COPY pyproject.toml /app/
 
-# Install the package
-RUN pip install -e .
+# Install the package (non-editable since we're in a container)
+RUN python3.11 -m pip install .
 
 # Copy Teeworlds server configuration
 COPY teeunit/server/teeworlds.cfg /opt/teeworlds/teeworlds.cfg
@@ -74,10 +76,9 @@ EXPOSE 7860
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT}/health')" || exit 1
+    CMD python3.11 -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT}/health')" || exit 1
 
-# Default: Run server (training uses different entrypoint)
-ENTRYPOINT ["/entrypoint.sh"]
-
-# For training, override with:
-# docker run --gpus all teeunit-gpu python -m teeunit.train train --steps 1000000 --device cuda
+# No default entrypoint - command is specified by orchestrator
+# For local server mode: docker run --gpus all teeunit-gpu /entrypoint.sh
+# For training: docker run --gpus all teeunit-gpu python3.11 -m teeunit.train train --steps 500000 --device cuda
+CMD ["python3.11", "-m", "teeunit.train", "--help"]
